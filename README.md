@@ -5,6 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
 [![Rust](https://img.shields.io/badge/Language-Rust%202024-DEA584.svg)](https://www.rust-lang.org/)
+[![Built by LLM](https://img.shields.io/badge/Generated%20by-LLM%20%2F%20AI-8A2BE2.svg)](#)
+
+> [!NOTE]
+> **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
 
 ---
 
