@@ -11,12 +11,12 @@ VB-Audio Voicemeeter ties its internal processing bus and mixing loop directly t
 2. **Event Trigger Activation:**
    Windows Task Scheduler evaluates the XPath query against the event data. When the query matches, Task Scheduler launches `earplugger.exe restart` with `RunLevel=LeastPrivilege` under an interactive logon token.
 
-3. **Handshake Debounce / Settle Window:**
-   USB audio class drivers, interface controllers, and firmware negotiate sample rates, buffer sizes, and clock timing over a brief transient interval. `earplugger` pauses for a configurable settle duration (default: 150ms).
+3. **Zero-Allocation Process Detection:**
+   `earplugger` takes a lightweight process snapshot using native Win32 `CreateToolhelp32Snapshot`. It traverses the process list in `<0.3ms` comparing wide character string slices without heap allocations. If Voicemeeter is not running, it exits immediately without waiting.
 
-4. **Zero-Allocation Process Detection:**
-   `earplugger` takes a lightweight process snapshot using native Win32 `CreateToolhelp32Snapshot`. It traverses the process list in `<0.3ms` comparing wide character string slices without heap allocations. If Voicemeeter is not running, it exits cleanly.
+4. **Handshake Debounce / Settle Window:**
+   USB audio class drivers, interface controllers, and firmware negotiate sample rates, buffer sizes, and clock timing over a brief transient interval. `earplugger` pauses for a configurable settle duration (default: 150ms).
 
 5. **Voicemeeter Remote C API Dynamic Invocation:**
    `earplugger` dynamically resolves the bitness-matched DLL (`VoicemeeterRemote64.dll` on 64-bit architectures, `VoicemeeterRemote.dll` on 32-bit) using `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH`.
-   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory, signals the engine message loop, and unloads the library cleanly via RAII Drop handlers.
+   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, `VBVMR_GetParameterStringW`, `VBVMR_IsParametersDirty`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory, polls for parameter consumption, and unloads the library cleanly via RAII Drop handlers.

@@ -45,7 +45,7 @@ pub fn decode_process_output(raw: &[u8]) -> String {
         );
         if len > 0 {
             let mut wide = vec![0u16; len as usize];
-            MultiByteToWideChar(
+            let written = MultiByteToWideChar(
                 CP_OEMCP,
                 0,
                 raw.as_ptr(),
@@ -53,7 +53,11 @@ pub fn decode_process_output(raw: &[u8]) -> String {
                 wide.as_mut_ptr(),
                 len,
             );
-            return String::from_utf16_lossy(&wide).trim().to_string();
+            if written > 0 {
+                return String::from_utf16_lossy(&wide[..written as usize])
+                    .trim()
+                    .to_string();
+            }
         }
     }
     String::from_utf8_lossy(raw).trim().to_string()
@@ -125,32 +129,18 @@ pub fn format_xpath_string_literal(s: &str) -> String {
     let clean: String = s.chars().filter(|&c| c >= ' ' || c == '\t').collect();
     if !clean.contains('\'') {
         format!("'{}'", clean)
+    } else if !clean.contains('"') {
+        // Windows Event Log query engine (wevtapi.dll) supports only a restricted subset of XPath 1.0;
+        // functions like concat() are explicitly unsupported (error 15008 / ERROR_EVT_INVALID_QUERY).
+        // For literals containing single quotes (e.g. "User's AirPods"), wrap in double quotes.
+        // During XML emission, double quotes become &quot;, which Task Scheduler decodes back to
+        // double quotes when creating the Event Log subscription.
+        format!("\"{}\"", clean)
     } else {
-        // XPath 1.0 concat() for literals containing single quotes.
-        // The generated expression uses double-quoted strings for apostrophe literals ("'").
-        // When embedded in the <Subscription> XML element, the entire XPath goes through
-        // xml_escape(), which converts those double quotes to &quot;. schtasks then decodes
-        // &quot; back to " before passing the XPath to the event filter engine — so the
-        // final XPath seen by the engine is syntactically correct. This two-phase escaping
-        // is intentional and must not be changed without updating both layers.
-        let tokens: Vec<&str> = clean.split('\'').collect();
-        let mut parts = Vec::new();
-        for (i, token) in tokens.iter().enumerate() {
-            if !token.is_empty() {
-                parts.push(format!("'{}'", token));
-            }
-            if i + 1 < tokens.len() {
-                parts.push("\"'\"".to_string());
-            }
-        }
-        // W3C XPath 1.0 section 4.2 requires concat() to take >= 2 arguments
-        if parts.is_empty() {
-            "''".to_string()
-        } else if parts.len() == 1 {
-            format!("concat({}, '')", parts[0])
-        } else {
-            format!("concat({})", parts.join(", "))
-        }
+        // If the string contains both single and double quotes, strip double quotes so the query
+        // is valid without invoking unsupported XPath concat().
+        let sanitized: String = clean.chars().filter(|&c| c != '"').collect();
+        format!("\"{}\"", sanitized)
     }
 }
 
@@ -502,15 +492,14 @@ mod tests {
     fn test_format_xpath_string_literal_with_apostrophe() {
         let input = "User's AirPods";
         let formatted = format_xpath_string_literal(input);
-        assert_eq!(formatted, "concat('User', \"'\", 's AirPods')");
+        assert_eq!(formatted, "\"User's AirPods\"");
     }
 
     #[test]
-    fn test_format_xpath_string_literal_single_apostrophe_arity() {
+    fn test_format_xpath_string_literal_single_apostrophe() {
         let input = "'";
         let formatted = format_xpath_string_literal(input);
-        // Must satisfy XPath 1.0 concat() arity of >= 2
-        assert_eq!(formatted, "concat(\"'\", '')");
+        assert_eq!(formatted, "\"'\"");
     }
 
     #[test]

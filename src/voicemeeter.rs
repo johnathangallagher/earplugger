@@ -14,9 +14,11 @@ type LogoutFn = unsafe extern "system" fn() -> i32;
 type SetParamFn = unsafe extern "system" fn(*const i8, f32) -> i32;
 type GetParamStringWFn = unsafe extern "system" fn(*const i8, *mut u16, i32) -> i32;
 type IsDirtyFn = unsafe extern "system" fn() -> i32;
+#[allow(clippy::upper_case_acronyms)]
+type FARPROC = Option<unsafe extern "system" fn() -> isize>;
 
 #[repr(C)]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, dead_code)]
 struct ProcessEntry32W {
     dwSize: u32,
     cntUsage: u32,
@@ -37,7 +39,7 @@ const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x00000008;
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn LoadLibraryExW(lpLibFileName: *const u16, hFile: *mut c_void, dwFlags: u32) -> *mut c_void;
-    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const i8) -> *mut c_void;
+    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const i8) -> FARPROC;
     fn FreeLibrary(hLibModule: *mut c_void) -> i32;
     fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> *mut c_void;
     fn Process32FirstW(hSnapshot: *mut c_void, lppe: *mut ProcessEntry32W) -> i32;
@@ -202,15 +204,26 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                             input.push(0);
 
                             let mut exp_buf = vec![0u16; 1024];
-                            let exp_len = unsafe {
+                            let mut exp_len = unsafe {
                                 ExpandEnvironmentStringsW(
                                     input.as_ptr(),
                                     exp_buf.as_mut_ptr(),
                                     exp_buf.len() as u32,
                                 )
                             };
+                            // If buffer was too small, exp_len holds the required character count including NUL.
+                            // Resize the buffer and retry expansion.
+                            if exp_len as usize > exp_buf.len() {
+                                exp_buf.resize(exp_len as usize, 0);
+                                exp_len = unsafe {
+                                    ExpandEnvironmentStringsW(
+                                        input.as_ptr(),
+                                        exp_buf.as_mut_ptr(),
+                                        exp_buf.len() as u32,
+                                    )
+                                };
+                            }
                             // exp_len includes the NUL terminator. A return of 0 means API failure.
-                            // A return > exp_buf.len() means output was truncated.
                             if exp_len > 0 && (exp_len as usize) <= exp_buf.len() {
                                 // exp_len includes the NUL; find it explicitly rather than trusting the count.
                                 let exp_end = exp_buf[..exp_len as usize]
@@ -219,7 +232,7 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                                     .unwrap_or(exp_len as usize - 1);
                                 String::from_utf16_lossy(&exp_buf[..exp_end])
                             } else {
-                                // Expansion failed or truncated — fall back to the unexpanded string.
+                                // Expansion failed — fall back to the unexpanded string.
                                 String::from_utf16_lossy(&u16_slice[..len])
                             }
                         } else {
@@ -433,10 +446,10 @@ impl VoicemeeterClient {
             )
         };
 
-        if login_ptr.is_null()
-            || logout_ptr.is_null()
-            || set_param_ptr.is_null()
-            || get_param_str_ptr.is_null()
+        if login_ptr.is_none()
+            || logout_ptr.is_none()
+            || set_param_ptr.is_none()
+            || get_param_str_ptr.is_none()
         {
             unsafe {
                 FreeLibrary(h_module);
@@ -444,27 +457,20 @@ impl VoicemeeterClient {
             return Err("Failed to resolve Voicemeeter API entry points".to_string());
         }
 
-        // Transmute via Option<fn> — the canonical Rust pattern for converting a data pointer
-        // (returned by GetProcAddress) to a function pointer without UB. The null check above
-        // guarantees the unwrap() cannot panic.
-        let login: LoginFn =
-            unsafe { std::mem::transmute::<*mut c_void, Option<LoginFn>>(login_ptr) }
-                .expect("login_ptr null despite null check");
+        // Transmute FARPROC (canonical function pointer) to specific Voicemeeter API signatures.
+        let login: LoginFn = unsafe { std::mem::transmute::<FARPROC, Option<LoginFn>>(login_ptr) }
+            .expect("login_ptr none despite check");
         let logout: LogoutFn =
-            unsafe { std::mem::transmute::<*mut c_void, Option<LogoutFn>>(logout_ptr) }
-                .expect("logout_ptr null despite null check");
+            unsafe { std::mem::transmute::<FARPROC, Option<LogoutFn>>(logout_ptr) }
+                .expect("logout_ptr none despite check");
         let set_param: SetParamFn =
-            unsafe { std::mem::transmute::<*mut c_void, Option<SetParamFn>>(set_param_ptr) }
-                .expect("set_param_ptr null despite null check");
-        let get_param_str: GetParamStringWFn = unsafe {
-            std::mem::transmute::<*mut c_void, Option<GetParamStringWFn>>(get_param_str_ptr)
-        }
-        .expect("get_param_str_ptr null despite null check");
-        let is_dirty: Option<IsDirtyFn> = if !is_dirty_ptr.is_null() {
-            unsafe { std::mem::transmute::<*mut c_void, Option<IsDirtyFn>>(is_dirty_ptr) }
-        } else {
-            None
-        };
+            unsafe { std::mem::transmute::<FARPROC, Option<SetParamFn>>(set_param_ptr) }
+                .expect("set_param_ptr none despite check");
+        let get_param_str: GetParamStringWFn =
+            unsafe { std::mem::transmute::<FARPROC, Option<GetParamStringWFn>>(get_param_str_ptr) }
+                .expect("get_param_str_ptr none despite check");
+        let is_dirty: Option<IsDirtyFn> =
+            unsafe { std::mem::transmute::<FARPROC, Option<IsDirtyFn>>(is_dirty_ptr) };
 
         let res = unsafe { login() };
         if res != 0 {

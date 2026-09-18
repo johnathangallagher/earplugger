@@ -264,6 +264,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             {
                 return Err("Value for --device contains illegal control characters".to_string());
             }
+            if val.contains('\'') && val.contains('"') {
+                return Err("Device name cannot contain both single and double quotes".to_string());
+            }
             device = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--device=") {
@@ -276,6 +279,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
                 .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
             {
                 return Err("Value for --device contains illegal control characters".to_string());
+            }
+            if val.contains('\'') && val.contains('"') {
+                return Err("Device name cannot contain both single and double quotes".to_string());
             }
             device = Some(val.to_string());
             i += 1;
@@ -374,20 +380,6 @@ fn handle_restart(args: &[String]) {
         }
         if !opts.silent {
             eprintln!("[earplugger] Error: {}", e);
-        } else if let Ok(temp) = std::env::var("TEMP") {
-            let log_path = std::path::Path::new(&temp).join("earplugger.log");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                use std::io::Write;
-                let secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let _ = writeln!(f, "[epoch: {}] Restart error: {}", secs, e);
-            }
         }
         std::process::exit(1);
     } else if !opts.silent {
@@ -426,7 +418,15 @@ fn handle_install(args: &[String]) {
         std::process::exit(1);
     }
 
-    let mut device_name = opts.device;
+    // Clean user-specified device name if provided to strip driver prefixes or endpoint roles
+    let mut device_name = opts.device.as_deref().map(clean_device_name);
+    if let Some(ref d) = device_name {
+        if d.is_empty() || d == "-" {
+            device_name = None;
+        } else {
+            println!("[*] Filtering trigger on device: '{}'", d);
+        }
+    }
 
     // If device not specified, try to auto-detect from active Voicemeeter A1
     if device_name.is_none() {
@@ -601,15 +601,34 @@ fn handle_status(args: &[String]) {
             if e == "Task is not registered"
                 || lower.contains("cannot find")
                 || lower.contains("could not be found")
+                || lower.contains("not registered")
                 || lower.contains("nicht finden")
+                || lower.contains("nicht gefunden")
                 || lower.contains("introuvable")
+                || lower.contains("ne peut trouver")
                 || lower.contains("no such file")
+                || lower.contains("no puede encontrar")
+                || lower.contains("no se puede encontrar")
+                || lower.contains("no existe")
+                || lower.contains("impossibile trovare")
+                || lower.contains("non trovato")
+                || lower.contains("não pode encontrar")
+                || lower.contains("não foi possível encontrar")
+                || lower.contains("не удается найти")
+                || lower.contains("не найден")
+                || lower.contains("找不到")
+                || lower.contains("不存在")
+                || lower.contains("見つかりません")
+                || lower.contains("存在しません")
+                || lower.contains("찾을 수 없습니다")
+                || lower.contains("없습니다")
             {
                 println!("  Task status     : NOT REGISTERED");
                 println!("  Run 'earplugger install' to activate.");
             } else {
                 eprintln!("  Task status     : ERROR QUERYING TASK");
                 eprintln!("  Details         : {}", e);
+                std::process::exit(1);
             }
         }
     }
@@ -904,5 +923,11 @@ mod tests {
         let args = vec!["/?".to_string()];
         let opts = parse_options(&args).unwrap();
         assert!(opts.help_requested);
+    }
+
+    #[test]
+    fn test_parse_options_rejects_mixed_quotes() {
+        let args = vec![r#"--device=User's "DAC""#.to_string()];
+        assert!(parse_options(&args).is_err());
     }
 }

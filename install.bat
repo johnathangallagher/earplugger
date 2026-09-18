@@ -12,7 +12,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-setlocal EnableDelayedExpansion
+setlocal DisableDelayedExpansion
 cd /d "%~dp0"
 
 set "EXE_PATH="
@@ -23,10 +23,10 @@ if exist "%~dp0earplugger.exe" (
 ) else (
     echo [*] Release binary not found. Building via cargo...
     cargo build --release
-    if !ERRORLEVEL! NEQ 0 (
+    if errorlevel 1 (
         echo [!] Build failed. Please ensure Rust and cargo are installed.
         pause
-        exit /b !ERRORLEVEL!
+        exit /b 1
     )
     set "EXE_PATH=%~dp0target\release\earplugger.exe"
 )
@@ -40,25 +40,10 @@ set "OPT_USER="
 :parse_args
 if "%~1"=="" goto run_install
 
-set "ARG=%~1"
-
 rem Support --help, -h, /?
-if /i "!ARG!"=="--help" goto show_help
-if /i "!ARG!"=="-h" goto show_help
-if "!ARG!"=="/?" goto show_help
-
-rem Support --device=<NAME>
-if /i "!ARG:~0,9!"=="--device=" (
-    set "VAL=!ARG:~9!"
-    set "VAL=!VAL:"=!"
-    if "!VAL!"=="" (
-        echo [-] Missing value for --device
-        pause
-        exit /b 1
-    )
-    set "OPT_DEVICE=!VAL!"
-    shift & goto parse_args
-)
+if /i "%~1"=="--help" goto show_help
+if /i "%~1"=="-h" goto show_help
+if "%~1"=="/?" goto show_help
 
 rem Support --device <NAME>
 if /i "%~1"=="--device" (
@@ -67,27 +52,19 @@ if /i "%~1"=="--device" (
         pause
         exit /b 1
     )
-    set "VAL=%~2"
-    set "VAL=!VAL:"=!"
-    set "OPT_DEVICE=!VAL!"
+    set "OPT_DEVICE=%~2"
     shift & shift & goto parse_args
 )
 
-rem Support --delay-ms=<MS>
-if /i "!ARG:~0,11!"=="--delay-ms=" (
-    set "VAL=!ARG:~11!"
-    set "VAL=!VAL:"=!"
-    if "!VAL!"=="" (
-        echo [-] Missing value for --delay-ms
+rem Support --device=<NAME>
+set "ARG=%~1"
+if /i "%ARG:~0,9%"=="--device=" (
+    set "OPT_DEVICE=%ARG:~9%"
+    if not defined OPT_DEVICE (
+        echo [-] Missing value for --device
         pause
         exit /b 1
     )
-    for /f "delims=0123456789" %%A in ("!VAL!") do (
-        echo [-] Invalid numeric value for --delay-ms: "!VAL!"
-        pause
-        exit /b 1
-    )
-    set "OPT_DELAY=!VAL!"
     shift & goto parse_args
 )
 
@@ -98,27 +75,28 @@ if /i "%~1"=="--delay-ms" (
         pause
         exit /b 1
     )
-    set "VAL=%~2"
-    set "VAL=!VAL:"=!"
-    for /f "delims=0123456789" %%A in ("!VAL!") do (
-        echo [-] Invalid numeric value for --delay-ms: "!VAL!"
+    for /f "delims=0123456789" %%A in ("%~2") do (
+        echo [-] Invalid numeric value for --delay-ms: "%~2"
         pause
         exit /b 1
     )
-    set "OPT_DELAY=!VAL!"
+    set "OPT_DELAY=%~2"
     shift & shift & goto parse_args
 )
 
-rem Support --user=<USERNAME>
-if /i "!ARG:~0,7!"=="--user=" (
-    set "VAL=!ARG:~7!"
-    set "VAL=!VAL:"=!"
-    if "!VAL!"=="" (
-        echo [-] Missing value for --user
+rem Support --delay-ms=<MS>
+if /i "%ARG:~0,11%"=="--delay-ms=" (
+    set "OPT_DELAY=%ARG:~11%"
+    if not defined OPT_DELAY (
+        echo [-] Missing value for --delay-ms
         pause
         exit /b 1
     )
-    set "OPT_USER=!VAL!"
+    for /f "delims=0123456789" %%A in ("%ARG:~11%") do (
+        echo [-] Invalid numeric value for --delay-ms: "%ARG:~11%"
+        pause
+        exit /b 1
+    )
     shift & goto parse_args
 )
 
@@ -129,13 +107,22 @@ if /i "%~1"=="--user" (
         pause
         exit /b 1
     )
-    set "VAL=%~2"
-    set "VAL=!VAL:"=!"
-    set "OPT_USER=!VAL!"
+    set "OPT_USER=%~2"
     shift & shift & goto parse_args
 )
 
-echo [-] Unknown argument: "!ARG!"
+rem Support --user=<USERNAME>
+if /i "%ARG:~0,7%"=="--user=" (
+    set "OPT_USER=%ARG:~7%"
+    if not defined OPT_USER (
+        echo [-] Missing value for --user
+        pause
+        exit /b 1
+    )
+    shift & goto parse_args
+)
+
+echo [-] Unknown argument: "%~1"
 echo     Accepted: --device "NAME", --delay-ms MS, --user "USERNAME"
 pause
 exit /b 1
@@ -152,15 +139,15 @@ exit /b 0
 
 :run_install
 set "CMD_ARGS="
-if defined OPT_DEVICE set "CMD_ARGS=!CMD_ARGS! --device "!OPT_DEVICE!""
-if defined OPT_DELAY set "CMD_ARGS=!CMD_ARGS! --delay-ms !OPT_DELAY!"
-if defined OPT_USER set "CMD_ARGS=!CMD_ARGS! --user "!OPT_USER!""
+if defined OPT_DEVICE call set "CMD_ARGS=%%CMD_ARGS%% --device "%%OPT_DEVICE%%""
+if defined OPT_DELAY call set "CMD_ARGS=%%CMD_ARGS%% --delay-ms %%OPT_DELAY%%"
+if defined OPT_USER call set "CMD_ARGS=%%CMD_ARGS%% --user "%%OPT_USER%%""
 
-"%EXE_PATH%" install!CMD_ARGS!
-if !ERRORLEVEL! NEQ 0 (
-    echo [-] Installation failed with exit code !ERRORLEVEL!.
+"%EXE_PATH%" install%CMD_ARGS%
+if errorlevel 1 (
+    echo [-] Installation failed.
     pause
-    exit /b !ERRORLEVEL!
+    exit /b 1
 )
 
 echo [+] Installation complete.
