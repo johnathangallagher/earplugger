@@ -11,9 +11,33 @@ pub fn get_exe_path() -> Result<PathBuf, String> {
     env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {}", e))
 }
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetSystemDirectoryW(lpBuffer: *mut u16, uSize: u32) -> u32;
+}
+
 fn get_system32_path(binary: &str) -> PathBuf {
-    let sys_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    PathBuf::from(sys_root).join("System32").join(binary)
+    let mut buf = vec![0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) };
+    let sys_dir = if len > 0 && (len as usize) < buf.len() {
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        PathBuf::from(s)
+    } else {
+        let sys_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        PathBuf::from(sys_root).join("System32")
+    };
+
+    #[cfg(target_pointer_width = "32")]
+    {
+        if let Some(parent) = sys_dir.parent() {
+            let sysnative = parent.join("Sysnative").join(binary);
+            if sysnative.exists() {
+                return sysnative;
+            }
+        }
+    }
+
+    sys_dir.join(binary)
 }
 
 pub fn xml_escape(s: &str) -> String {
@@ -63,7 +87,12 @@ pub fn format_xpath_string_literal(s: &str) -> String {
     }
 }
 
-pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: u64) -> String {
+pub fn generate_task_xml(
+    exe_path: &str,
+    device_filter: Option<&str>,
+    delay_ms: u64,
+    user: Option<&str>,
+) -> String {
     let filter_clause = match device_filter {
         Some(dev) => {
             let formatted_literal = format_xpath_string_literal(dev);
@@ -92,6 +121,13 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     };
     let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
+    let user_elem = match user {
+        Some(u) if !u.trim().is_empty() => {
+            format!("\n      <UserId>{}</UserId>", xml_escape(u.trim()))
+        }
+        _ => String::new(),
+    };
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -106,7 +142,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     </EventTrigger>
   </Triggers>
   <Principals>
-    <Principal id="Author">
+    <Principal id="Author">{}
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -137,7 +173,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     </Exec>
   </Actions>
 </Task>"#,
-        escaped_subscription, escaped_exe, args_elem
+        escaped_subscription, user_elem, escaped_exe, args_elem
     )
 }
 
@@ -161,6 +197,26 @@ pub fn enable_audio_operational_log() -> Result<(), String> {
     Ok(())
 }
 
+pub fn disable_audio_operational_log() -> Result<(), String> {
+    let wevtutil = get_system32_path("wevtutil.exe");
+    let output = Command::new(wevtutil)
+        .args(["sl", "Microsoft-Windows-Audio/Operational", "/e:false"])
+        .output()
+        .map_err(|e| format!("Failed to invoke wevtutil.exe: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let out = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "wevtutil failed to disable Microsoft-Windows-Audio/Operational log: {} {}",
+            out.trim(),
+            err.trim()
+        ));
+    }
+
+    Ok(())
+}
+
 struct TempFileGuard(PathBuf);
 
 impl Drop for TempFileGuard {
@@ -169,14 +225,20 @@ impl Drop for TempFileGuard {
     }
 }
 
-pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), String> {
+pub fn install_task(
+    device_filter: Option<&str>,
+    delay_ms: u64,
+    user: Option<&str>,
+) -> Result<(), String> {
     // Ensure the Windows Audio Operational event channel is active
     enable_audio_operational_log()?;
 
     let exe = get_exe_path()?;
-    let exe_str = exe.to_string_lossy();
+    let exe_str = exe
+        .to_str()
+        .ok_or_else(|| "Executable path contains non-UTF-8 characters".to_string())?;
 
-    let xml = generate_task_xml(&exe_str, device_filter, delay_ms);
+    let xml = generate_task_xml(exe_str, device_filter, delay_ms, user);
 
     let utf16: Vec<u16> = xml.encode_utf16().collect();
     let mut bytes = Vec::with_capacity(utf16.len() * 2 + 2);
@@ -239,7 +301,7 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
     Ok(())
 }
 
-pub fn uninstall_task() -> Result<(), String> {
+pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
         .args(["/delete", "/tn", TASK_NAME, "/f"])
@@ -256,18 +318,32 @@ pub fn uninstall_task() -> Result<(), String> {
         ));
     }
 
+    if disable_channel {
+        disable_audio_operational_log()?;
+    }
+
     Ok(())
 }
 
-pub fn query_task_status() -> Result<String, String> {
+pub struct TaskStatusDetails {
+    pub is_enabled: bool,
+    pub xml_raw: String,
+}
+
+pub fn query_task_status() -> Result<TaskStatusDetails, String> {
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
-        .args(["/query", "/tn", TASK_NAME, "/fo", "LIST"])
+        .args(["/query", "/tn", TASK_NAME, "/xml"])
         .output()
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let xml = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let is_enabled = !xml.contains("<Enabled>false</Enabled>");
+        Ok(TaskStatusDetails {
+            is_enabled,
+            xml_raw: xml,
+        })
     } else {
         Err("Task is not registered".to_string())
     }
@@ -311,18 +387,26 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_structure() {
-        let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 150);
+        let xml = generate_task_xml(
+            r"C:\Audio & Tools\earplugger.exe",
+            Some("RODE NT-USB"),
+            150,
+            None,
+        );
         // Command element must NOT contain quotes (&quot;)
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
         assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
-        assert!(xml.contains("(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"));
+        assert!(xml.contains(
+            "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
+        ));
     }
 
     #[test]
-    fn test_generate_task_xml_custom_delay() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200);
+    fn test_generate_task_xml_custom_delay_and_user() {
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"));
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
+        assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
     }
 }

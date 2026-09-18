@@ -43,6 +43,7 @@ unsafe extern "system" {
     fn Process32FirstW(hSnapshot: *mut c_void, lppe: *mut ProcessEntry32W) -> i32;
     fn Process32NextW(hSnapshot: *mut c_void, lppe: *mut ProcessEntry32W) -> i32;
     fn CloseHandle(hObject: *mut c_void) -> i32;
+    fn ExpandEnvironmentStringsW(lpSrc: *const u16, lpDst: *mut u16, nSize: u32) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -87,12 +88,42 @@ fn to_wide_str(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn parse_uninstall_string_dir(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    let exe_str = if let Some(rest) = trimmed.strip_prefix('"') {
+        if let Some(end_quote) = rest.find('"') {
+            &rest[..end_quote]
+        } else {
+            trimmed.trim_matches('"')
+        }
+    } else if let Some(exe_idx) = trimmed.to_lowercase().find(".exe") {
+        &trimmed[..exe_idx + 4]
+    } else if let Some(space_idx) = trimmed.find(' ') {
+        &trimmed[..space_idx]
+    } else {
+        trimmed
+    };
+
+    let exe_path = PathBuf::from(exe_str);
+    exe_path.parent().map(|p| p.to_path_buf())
+}
+
 fn query_registry_uninstall_dir() -> Option<PathBuf> {
     let subkeys = [
+        // Voicemeeter Banana
         r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {173CE46D-8D5C-461C-B001-57753AB21EAE}",
         r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {173CE46D-8D5C-461C-B001-57753AB21EAE}",
+        // Voicemeeter Standard
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {17359A74-1236-5467}",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {17359A74-1236-5467}",
+        // Voicemeeter Potato
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:VoicemeeterPotato {173CE46D-8D5C-461C-B001-57753AB21EAE}",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\VB:VoicemeeterPotato {173CE46D-8D5C-461C-B001-57753AB21EAE}",
     ];
-    let val_name = to_wide_str("UninstallString");
+    let val_names = [
+        to_wide_str("InstallLocation"),
+        to_wide_str("UninstallString"),
+    ];
 
     for subkey in subkeys {
         let subkey_wide = to_wide_str(subkey);
@@ -108,40 +139,97 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                 )
             };
             if status == 0 && !hkey.is_null() {
-                // Use Vec<u16> to ensure proper 2-byte alignment for wide string deserialization
-                let mut buf = vec![0u16; 512];
-                let mut data_len = (buf.len() * std::mem::size_of::<u16>()) as u32;
-                let mut val_type: u32 = 0;
-                let query_res = unsafe {
-                    RegQueryValueExW(
-                        hkey,
-                        val_name.as_ptr(),
-                        std::ptr::null_mut(),
-                        &mut val_type,
-                        buf.as_mut_ptr() as *mut u8,
-                        &mut data_len,
-                    )
-                };
-                unsafe {
-                    RegCloseKey(hkey);
-                }
-                // Check success, valid string types (REG_SZ = 1, REG_EXPAND_SZ = 2), and non-empty length
-                if query_res == 0 && (val_type == 1 || val_type == 2) && data_len >= 2 {
-                    let char_count = (data_len as usize) / 2;
-                    let u16_slice = &buf[..char_count];
-                    let len = u16_slice
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(u16_slice.len());
-                    let path_str = String::from_utf16_lossy(&u16_slice[..len]);
-                    let clean = path_str.trim_matches('"');
-                    let exe_path = PathBuf::from(clean);
-                    if let Some(parent) = exe_path.parent() {
-                        let candidate = parent.join(DLL_NAME);
-                        if candidate.exists() {
-                            return Some(candidate);
+                for (val_idx, val_name) in val_names.iter().enumerate() {
+                    // Use Vec<u16> to ensure proper 2-byte alignment for wide string deserialization
+                    let mut buf = vec![0u16; 512];
+                    let mut data_len = (buf.len() * std::mem::size_of::<u16>()) as u32;
+                    let mut val_type: u32 = 0;
+                    let mut query_res = unsafe {
+                        RegQueryValueExW(
+                            hkey,
+                            val_name.as_ptr(),
+                            std::ptr::null_mut(),
+                            &mut val_type,
+                            buf.as_mut_ptr() as *mut u8,
+                            &mut data_len,
+                        )
+                    };
+
+                    // Handle ERROR_MORE_DATA (234) dynamically if the registry path exceeds initial buffer
+                    if query_res == 234 && data_len > 0 {
+                        let required_u16s = (data_len as usize).div_ceil(2);
+                        buf.resize(required_u16s, 0);
+                        query_res = unsafe {
+                            RegQueryValueExW(
+                                hkey,
+                                val_name.as_ptr(),
+                                std::ptr::null_mut(),
+                                &mut val_type,
+                                buf.as_mut_ptr() as *mut u8,
+                                &mut data_len,
+                            )
+                        };
+                    }
+
+                    // Check success, valid string types (REG_SZ = 1, REG_EXPAND_SZ = 2), and non-empty length
+                    if query_res == 0 && (val_type == 1 || val_type == 2) && data_len >= 2 {
+                        let char_count = (data_len as usize) / 2;
+                        let u16_slice = &buf[..char_count];
+                        let len = u16_slice
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(u16_slice.len());
+
+                        // If REG_EXPAND_SZ (2), expand environment variables like %ProgramFiles%
+                        let resolved_str = if val_type == 2 {
+                            let mut exp_buf = vec![0u16; 1024];
+                            let exp_len = unsafe {
+                                ExpandEnvironmentStringsW(
+                                    buf.as_ptr(),
+                                    exp_buf.as_mut_ptr(),
+                                    exp_buf.len() as u32,
+                                )
+                            };
+                            if exp_len > 0 && (exp_len as usize) <= exp_buf.len() {
+                                let exp_slice = &exp_buf[..exp_len as usize];
+                                let exp_end = exp_slice
+                                    .iter()
+                                    .position(|&c| c == 0)
+                                    .unwrap_or(exp_slice.len());
+                                String::from_utf16_lossy(&exp_slice[..exp_end])
+                            } else {
+                                String::from_utf16_lossy(&u16_slice[..len])
+                            }
+                        } else {
+                            String::from_utf16_lossy(&u16_slice[..len])
+                        };
+
+                        let candidate_dir = if val_idx == 0 {
+                            // InstallLocation is directly the directory path
+                            let trimmed = resolved_str.trim().trim_matches('"');
+                            if !trimmed.is_empty() {
+                                Some(PathBuf::from(trimmed))
+                            } else {
+                                None
+                            }
+                        } else {
+                            // UninstallString contains an executable path, potentially with arguments
+                            parse_uninstall_string_dir(&resolved_str)
+                        };
+
+                        if let Some(dir) = candidate_dir {
+                            let candidate_dll = dir.join(DLL_NAME);
+                            if candidate_dll.exists() {
+                                unsafe {
+                                    RegCloseKey(hkey);
+                                }
+                                return Some(candidate_dll);
+                            }
                         }
                     }
+                }
+                unsafe {
+                    RegCloseKey(hkey);
                 }
             }
         }
@@ -286,61 +374,75 @@ impl VoicemeeterClient {
         let mut wide_path: Vec<u16> = dll_path.as_os_str().encode_wide().collect();
         wide_path.push(0);
 
-        unsafe {
-            let h_module = LoadLibraryExW(
+        let h_module = unsafe {
+            LoadLibraryExW(
                 wide_path.as_ptr(),
                 std::ptr::null_mut(),
                 LOAD_WITH_ALTERED_SEARCH_PATH,
-            );
-            if h_module.is_null() {
-                return Err(format!("Failed to load {}", dll_path.display()));
-            }
-
-            let login_ptr = GetProcAddress(h_module, c"VBVMR_Login".as_ptr());
-            let logout_ptr = GetProcAddress(h_module, c"VBVMR_Logout".as_ptr());
-            let set_param_ptr = GetProcAddress(h_module, c"VBVMR_SetParameterFloat".as_ptr());
-            let get_param_str_ptr = GetProcAddress(h_module, c"VBVMR_GetParameterStringW".as_ptr());
-            let is_dirty_ptr = GetProcAddress(h_module, c"VBVMR_IsParametersDirty".as_ptr());
-
-            if login_ptr.is_null()
-                || logout_ptr.is_null()
-                || set_param_ptr.is_null()
-                || get_param_str_ptr.is_null()
-            {
-                FreeLibrary(h_module);
-                return Err("Failed to resolve Voicemeeter API entry points".to_string());
-            }
-
-            let login: LoginFn = std::mem::transmute(login_ptr);
-            let logout: LogoutFn = std::mem::transmute(logout_ptr);
-            let set_param: SetParamFn = std::mem::transmute(set_param_ptr);
-            let get_param_str: GetParamStringWFn = std::mem::transmute(get_param_str_ptr);
-            let is_dirty: Option<IsDirtyFn> = if !is_dirty_ptr.is_null() {
-                Some(std::mem::transmute::<*mut c_void, IsDirtyFn>(is_dirty_ptr))
-            } else {
-                None
-            };
-
-            let res = login();
-            if res != 0 {
-                FreeLibrary(h_module);
-                return Err(if res == 1 {
-                    "Voicemeeter is not running".to_string()
-                } else {
-                    format!("VBVMR_Login failed with error code: {}", res)
-                });
-            }
-
-            Ok(Self {
-                h_module,
-                logged_in: true,
-                _login_fn: login,
-                logout_fn: logout,
-                set_param_fn: set_param,
-                get_param_str_fn: get_param_str,
-                is_dirty_fn: is_dirty,
-            })
+            )
+        };
+        if h_module.is_null() {
+            return Err(format!("Failed to load {}", dll_path.display()));
         }
+
+        let (login_ptr, logout_ptr, set_param_ptr, get_param_str_ptr, is_dirty_ptr) = unsafe {
+            (
+                GetProcAddress(h_module, c"VBVMR_Login".as_ptr()),
+                GetProcAddress(h_module, c"VBVMR_Logout".as_ptr()),
+                GetProcAddress(h_module, c"VBVMR_SetParameterFloat".as_ptr()),
+                GetProcAddress(h_module, c"VBVMR_GetParameterStringW".as_ptr()),
+                GetProcAddress(h_module, c"VBVMR_IsParametersDirty".as_ptr()),
+            )
+        };
+
+        if login_ptr.is_null()
+            || logout_ptr.is_null()
+            || set_param_ptr.is_null()
+            || get_param_str_ptr.is_null()
+        {
+            unsafe {
+                FreeLibrary(h_module);
+            }
+            return Err("Failed to resolve Voicemeeter API entry points".to_string());
+        }
+
+        let login: LoginFn = unsafe { std::mem::transmute(login_ptr) };
+        let logout: LogoutFn = unsafe { std::mem::transmute(logout_ptr) };
+        let set_param: SetParamFn = unsafe { std::mem::transmute(set_param_ptr) };
+        let get_param_str: GetParamStringWFn = unsafe { std::mem::transmute(get_param_str_ptr) };
+        let is_dirty: Option<IsDirtyFn> = if !is_dirty_ptr.is_null() {
+            Some(unsafe { std::mem::transmute::<*mut c_void, IsDirtyFn>(is_dirty_ptr) })
+        } else {
+            None
+        };
+
+        let res = unsafe { login() };
+        if res != 0 {
+            if res == 1 {
+                // Call VBVMR_Logout to tear down initialized communication primitives before unmapping DLL
+                unsafe {
+                    logout();
+                }
+            }
+            unsafe {
+                FreeLibrary(h_module);
+            }
+            return Err(if res == 1 {
+                "Voicemeeter is not running".to_string()
+            } else {
+                format!("VBVMR_Login failed with error code: {}", res)
+            });
+        }
+
+        Ok(Self {
+            h_module,
+            logged_in: true,
+            _login_fn: login,
+            logout_fn: logout,
+            set_param_fn: set_param,
+            get_param_str_fn: get_param_str,
+            is_dirty_fn: is_dirty,
+        })
     }
 
     pub fn set_parameter_float(&self, param: &CStr, val: f32) -> Result<(), String> {
@@ -482,5 +584,26 @@ mod tests {
                 upper
             );
         }
+    }
+
+    #[test]
+    fn test_parse_uninstall_string_dir() {
+        let quoted = r#""C:\Program Files\VB\Voicemeeter\uninstall.exe" -silent"#;
+        assert_eq!(
+            parse_uninstall_string_dir(quoted),
+            Some(PathBuf::from(r"C:\Program Files\VB\Voicemeeter"))
+        );
+
+        let unquoted = r#"C:\Program Files\VB\Voicemeeter\uninstall.exe /all"#;
+        assert_eq!(
+            parse_uninstall_string_dir(unquoted),
+            Some(PathBuf::from(r"C:\Program Files\VB\Voicemeeter"))
+        );
+
+        let simple = r#"C:\Tools\Voicemeeter\unins000.exe"#;
+        assert_eq!(
+            parse_uninstall_string_dir(simple),
+            Some(PathBuf::from(r"C:\Tools\Voicemeeter"))
+        );
     }
 }

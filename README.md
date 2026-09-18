@@ -48,7 +48,7 @@ sequenceDiagram
     KVM->>Win: Reconnects USB Device (e.g. RODE NT-USB)
     Win->>Win: Logs Event 65 (Device state changed to ACTIVE)
     Win->>Task: Event Trigger Fires
-    Task->>EP: Spawns earplugger (Hidden, windowless, Queued)
+    Task->>EP: Spawns earplugger (Hidden, windowless, Debounced)
     EP->>EP: Settle Delay (150ms handshake buffer)
     EP->>VM: IPC via VoicemeeterRemote64.dll (Command.Restart = 1.0)
     VM->>VM: Flushes buffers & resyncs A1 hardware clock
@@ -68,8 +68,8 @@ sequenceDiagram
 - **Sub-Millisecond Process Detection**: Uses native Win32 `CreateToolhelp32Snapshot` to check if Voicemeeter is active in **< 0.3 ms** with zero heap allocations during scanning.
 - **RAII FFI Safety**: Encapsulated within `VoicemeeterClient` implementing the Rust `Drop` trait. Guarantees `VBVMR_Logout()` and `FreeLibrary()` are always executed, preventing memory leaks and orphaned IPC slots.
 - **Injection-Safe XML & XPath Generation**: Dedicated `xml_escape` and `format_xpath_string_literal` routines handle single quotes and control characters cleanly in device names.
-- **System32 Binary Execution**: Subprocesses (`schtasks.exe`, `wevtutil.exe`) are executed using fully-qualified paths rooted in `%SystemRoot%\System32`.
-- **Dynamic System Paths & Registry Fallbacks**: Discovers Voicemeeter DLLs dynamically across `%ProgramFiles(x86)%`, `%ProgramW6432%`, `%ProgramFiles%`, `%SystemDrive%`, and the Windows Uninstall Registry.
+- **System32 Binary Execution**: Subprocesses (`schtasks.exe`, `wevtutil.exe`) are executed using fully-qualified paths resolved via `GetSystemDirectoryW`, with `Sysnative` fallback for 32-bit builds on 64-bit Windows.
+- **Dynamic System Paths & Registry Fallbacks**: Discovers Voicemeeter DLLs dynamically across `%ProgramFiles(x86)%`, `%ProgramW6432%`, `%ProgramFiles%`, `%SystemDrive%`, and the Windows Uninstall Registry (covering Standard, Banana, and Potato editions).
 
 ---
 
@@ -78,7 +78,7 @@ sequenceDiagram
 ### 1. Download or Build
 
 #### Option A: Download Prebuilt Executable (Recommended)
-Download the latest `earplugger.exe` from [GitHub Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
+Download the latest prebuilt `earplugger.exe` or target archive (`x86_64` or `i686`) from [GitHub Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
 
 #### Option B: Build from Source
 Requires [Rust](https://www.rust-lang.org/tools/install):
@@ -96,9 +96,9 @@ earplugger.exe install
 * `earplugger` will automatically detect your currently running Voicemeeter engine and active **Hardware A1 device**.
 * It enables the `Microsoft-Windows-Audio/Operational` event log channel and registers the Windows Task Scheduler event trigger.
 
-To specify a custom device name or custom settling delay:
+To specify a custom device name, target user, or custom settling delay:
 ```powershell
-earplugger.exe install --device "RODE NT-USB" --delay-ms 150
+earplugger.exe install --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
 ```
 
 ### 3. Verify Status
@@ -118,15 +118,20 @@ Commands:
   install              Register Windows Task Scheduler event trigger
   uninstall            Remove Windows Task Scheduler event trigger
   status               Check status of task trigger and Voicemeeter engine
-  version              Print version information (--version, -v)
+  version              Print version information (--version, -v, -V)
   help                 Print this message
 
 Options for 'restart':
   --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150, max: 30000)
+  --silent             Suppress interactive output (used by Task Scheduler)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
   --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
+  --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
+
+Options for 'uninstall':
+  --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
 ```
 
 ---
@@ -145,6 +150,10 @@ cargo test
 To cleanly remove the Task Scheduler trigger:
 ```powershell
 earplugger.exe uninstall
+```
+To also disable the Windows Audio Operational event channel:
+```powershell
+earplugger.exe uninstall --disable-channel
 ```
 
 ---

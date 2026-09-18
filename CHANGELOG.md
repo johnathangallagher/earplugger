@@ -20,26 +20,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed sign-extension for `HKEY_LOCAL_MACHINE` constant (`(-2147483646isize) as *mut c_void`), resolving `ERROR_INVALID_HANDLE` failures on 64-bit Windows registry queries.
 - Fixed undefined behavior in registry deserialization by allocating directly into an aligned `Vec<u16>` buffer and validating `REG_SZ` / `REG_EXPAND_SZ` types.
 - Fixed typo in Voicemeeter Banana 64-bit process matching name (`voicemeeterpro_x64.exe`), restoring auto-restart detection.
-- Fixed `VBVMR_Login()` error handling to distinguish code `0` (success) from code `1` (Voicemeeter not launched) and negative error returns.
+- Fixed `VBVMR_Login()` error handling to distinguish code `0` (success) from code `1` (Voicemeeter not launched) and negative error returns, invoking `VBVMR_Logout()` before unmapping library to prevent client resource leaks.
 - Fixed XPath generation to preserve single quotes and apostrophes in device names via XPath 1.0 `concat()`, enforcing the minimum 2-argument arity required by W3C specifications.
-- Fixed device name parsing to extract hardware adapters while preserving embedded trademarks (e.g. `Realtek(R) Audio`, `Intel(R) Display Audio`).
+- Fixed device name parsing to extract hardware adapters across all Windows operating system languages (e.g. German, French, Spanish, Japanese, Chinese) while preserving embedded trademarks (e.g. `Realtek(R) Audio`, `Intel(R) Display Audio`).
 - Automatically enable the `Microsoft-Windows-Audio/Operational` event log channel during installation via `wevtutil.exe` to guarantee Event 65 records on clean Windows installations.
+- Added `--disable-channel` flag to `uninstall` command to allow optional deactivation of the audio event channel.
+- Added language-independent XML status inspection in `query_task_status()`, eliminating localized string scraping issues on international Windows editions.
+- Added dynamic buffer reallocation for `ERROR_MORE_DATA` (234) and `REG_EXPAND_SZ` environment variable expansion via `ExpandEnvironmentStringsW` in registry discovery.
+- Expanded registry discovery subkeys to cover Voicemeeter Standard, Banana, and Potato editions.
 - Fixed exit code in `uninstall` command to return status code `1` on failure and combined `stdout`/`stderr` reporting so errors are never blank.
 - Added check for Voicemeeter presence prior to sleeping in `restart` command to prevent idle blocking when Voicemeeter is offline.
 - Added `--help` / `-h` handling across subcommands and prevented accidental task deletion when running `uninstall --help`.
 
 ### Changed
 - Converted process snapshot matching in `is_voicemeeter_running()` to zero-allocation UTF-16 slice comparison against string literals.
-- Added bounds checking for `--delay-ms` (`0 <= delay <= 30000`) and support for `--flag=value` syntax.
-- Updated event filter to monitor both playback (`flow='0'`) and capture (`flow='1'`) endpoints, with `IgnoreNew` policy to prevent double-restart storms.
-- Added `--silent` flag and `FreeConsole()` detachment for background Task Scheduler runs.
+- Added strict bounds checking for `--delay-ms` (`0 <= delay <= 30000`), option validation per subcommand, and support for `--user` and `--disable-channel`.
+- Updated event filter to monitor both playback (`flow='0'`) and capture (`flow='1'`) endpoints, with `IgnoreNew` policy to debounce rapid events without restart storms.
 - Synchronized Voicemeeter client cache with dirty polls before reading device parameters.
 - Harmonized author email to `johnathangallagherusa@gmail.com` across all project files.
+- Added multi-target matrix (`x86_64` and `i686`) and standalone executable publishing in release workflow.
 
 ## [1.1.1] - 2026-09-18
 
 ### Fixed
-- Added a 100ms hold in `restart_audio_engine` before client drop to guarantee Voicemeeter's message loop consumes `Command.Restart` before shared memory is unmapped during logout.
+- Added a 150ms hold in `restart_audio_engine` before client drop to guarantee Voicemeeter's message loop consumes `Command.Restart` before shared memory is unmapped during logout.
 - Restored default USB settling delay to 150ms to allow USB audio class drivers to complete clock and format negotiation on hardware reconnects.
 
 ## [1.1.0] - 2026-09-18

@@ -33,7 +33,6 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
-    fn FreeConsole() -> i32;
 }
 
 pub fn is_user_admin() -> bool {
@@ -81,7 +80,7 @@ Commands:
   install              Register Windows Task Scheduler event trigger
   uninstall            Remove Windows Task Scheduler event trigger
   status               Check status of task trigger and Voicemeeter engine
-  version              Print version information (--version, -v)
+  version              Print version information (--version, -v, -V)
   help                 Print this message
 
 Options for 'restart':
@@ -91,13 +90,17 @@ Options for 'restart':
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
   --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
+  --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
+
+Options for 'uninstall':
+  --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
 
 Examples:
   earplugger restart
   earplugger install --device "RODE NT-USB"
   earplugger install
   earplugger status
-  earplugger uninstall
+  earplugger uninstall --disable-channel
 "#
     );
 }
@@ -113,23 +116,16 @@ pub fn clean_device_name(raw: &str) -> String {
         }
     }
 
-    // Windows endpoint friendly names are formatted as: "<Endpoint Type> (<Hardware Adapter>)"
-    // e.g., "Speakers (Realtek(R) Audio)" or "Headset Earphone (2- RODE NT-USB)"
-    // Only strip the outer wrapper if the string ends with ')' and has an opening '(' preceded by a known endpoint role
-    if let Some(first_paren) = s.find('(').filter(|_| s.ends_with(')')) {
-        let prefix = s[..first_paren].trim();
-        let is_endpoint_role = prefix.contains("Speaker")
-            || prefix.contains("Headphone")
-            || prefix.contains("Headset")
-            || prefix.contains("Earphone")
-            || prefix.contains("Mic")
-            || prefix.contains("Audio")
-            || prefix.contains("Line")
-            || prefix.contains("Digital");
-
-        if is_endpoint_role {
-            let inner = &s[first_paren + 1..s.len() - 1];
-            s = inner.trim();
+    // Windows endpoint friendly names across all languages are formatted as:
+    // "<Endpoint Role> (<Hardware Description>)"
+    // e.g., "Speakers (Realtek(R) Audio)", "Lautsprecher (RODE NT-USB)", "Altavoces (USB Audio)"
+    // The hardware description is enclosed in the outermost parenthetical group ending at the end of the string.
+    if s.ends_with(')') {
+        if let Some(first_paren) = s.find(" (") {
+            let inner = s[first_paren + 2..s.len() - 1].trim();
+            if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
+                s = inner;
+            }
         }
     }
 
@@ -147,14 +143,18 @@ pub fn clean_device_name(raw: &str) -> String {
 pub struct ParsedArgs {
     pub delay_ms: u64,
     pub device: Option<String>,
+    pub user: Option<String>,
     pub silent: bool,
+    pub disable_channel: bool,
     pub help_requested: bool,
 }
 
 pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut delay_ms = DEFAULT_DELAY_MS;
     let mut device: Option<String> = None;
+    let mut user: Option<String> = None;
     let mut silent = false;
+    let mut disable_channel = false;
     let mut help_requested = false;
     let mut i = 0;
 
@@ -166,6 +166,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             i += 1;
         } else if arg == "--silent" {
             silent = true;
+            i += 1;
+        } else if arg == "--disable-channel" {
+            disable_channel = true;
             i += 1;
         } else if arg == "--delay-ms" {
             if i + 1 >= args.len() {
@@ -198,10 +201,35 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if i + 1 >= args.len() {
                 return Err("Missing value for --device".to_string());
             }
-            device = Some(args[i + 1].clone());
+            let val = args[i + 1].trim();
+            if val.is_empty() {
+                return Err("Value for --device cannot be empty".to_string());
+            }
+            device = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--device=") {
-            device = Some(val_str.to_string());
+            let val = val_str.trim();
+            if val.is_empty() {
+                return Err("Value for --device cannot be empty".to_string());
+            }
+            device = Some(val.to_string());
+            i += 1;
+        } else if arg == "--user" {
+            if i + 1 >= args.len() {
+                return Err("Missing value for --user".to_string());
+            }
+            let val = args[i + 1].trim();
+            if val.is_empty() {
+                return Err("Value for --user cannot be empty".to_string());
+            }
+            user = Some(val.to_string());
+            i += 2;
+        } else if let Some(val_str) = arg.strip_prefix("--user=") {
+            let val = val_str.trim();
+            if val.is_empty() {
+                return Err("Value for --user cannot be empty".to_string());
+            }
+            user = Some(val.to_string());
             i += 1;
         } else {
             return Err(format!("Unrecognized option: '{}'", arg));
@@ -211,7 +239,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     Ok(ParsedArgs {
         delay_ms,
         device,
+        user,
         silent,
+        disable_channel,
         help_requested,
     })
 }
@@ -230,11 +260,11 @@ fn handle_restart(args: &[String]) {
         return;
     }
 
-    if opts.silent {
-        // Suppress console window allocation in background Task Scheduler runs
-        unsafe {
-            FreeConsole();
-        }
+    if opts.device.is_some() || opts.user.is_some() || opts.disable_channel {
+        eprintln!(
+            "[earplugger] Error: Invalid options for 'restart'. Only --delay-ms and --silent are accepted."
+        );
+        std::process::exit(1);
     }
 
     // Verify Voicemeeter is running BEFORE blocking on delay_ms
@@ -255,8 +285,15 @@ fn handle_restart(args: &[String]) {
     if let Err(e) = voicemeeter::restart_audio_engine(0) {
         if !opts.silent {
             eprintln!("[earplugger] Error: {}", e);
+            std::process::exit(1);
+        } else {
+            // In silent mode, exit cleanly if Voicemeeter was closed during the delay window
+            if e.contains("not running") {
+                std::process::exit(0);
+            } else {
+                std::process::exit(1);
+            }
         }
-        std::process::exit(1);
     } else if !opts.silent {
         println!("[earplugger] Successfully triggered Voicemeeter audio engine restart.");
     }
@@ -274,6 +311,13 @@ fn handle_install(args: &[String]) {
     if opts.help_requested {
         print_help();
         return;
+    }
+
+    if opts.silent || opts.disable_channel {
+        eprintln!(
+            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, and --user are accepted."
+        );
+        std::process::exit(1);
     }
 
     print_banner();
@@ -311,7 +355,7 @@ fn handle_install(args: &[String]) {
         "[*] Registering Task Scheduler trigger '{}'...",
         task::TASK_NAME
     );
-    match task::install_task(dev_str, opts.delay_ms) {
+    match task::install_task(dev_str, opts.delay_ms, opts.user.as_deref()) {
         Ok(_) => {
             println!("[+] Successfully installed Task Scheduler event trigger!");
             println!("    Event Log : Microsoft-Windows-Audio/Operational");
@@ -320,6 +364,9 @@ fn handle_install(args: &[String]) {
                 println!("    Filter    : DeviceName = '{}'", dev);
             } else {
                 println!("    Filter    : Any active audio endpoint");
+            }
+            if let Some(ref u) = opts.user {
+                println!("    User      : {}", u);
             }
             println!("    Delay     : {}ms settle time", opts.delay_ms);
             println!(
@@ -347,6 +394,17 @@ fn handle_uninstall(args: &[String]) {
         return;
     }
 
+    if opts.device.is_some()
+        || opts.user.is_some()
+        || opts.silent
+        || opts.delay_ms != DEFAULT_DELAY_MS
+    {
+        eprintln!(
+            "[-] Error: Invalid options for 'uninstall'. Only --disable-channel is accepted."
+        );
+        std::process::exit(1);
+    }
+
     print_banner();
 
     if !is_user_admin() {
@@ -361,9 +419,19 @@ fn handle_uninstall(args: &[String]) {
         "[*] Removing Task Scheduler trigger '{}'...",
         task::TASK_NAME
     );
-    match task::uninstall_task() {
+    match task::uninstall_task(opts.disable_channel) {
         Ok(_) => {
             println!("[+] Successfully removed Task Scheduler event trigger.");
+            if opts.disable_channel {
+                println!("[+] Disabled Microsoft-Windows-Audio/Operational event channel.");
+            } else {
+                println!(
+                    "    Note: The Microsoft-Windows-Audio/Operational event channel remains enabled."
+                );
+                println!(
+                    "          Run 'earplugger uninstall --disable-channel' if you wish to disable it."
+                );
+            }
         }
         Err(e) => {
             eprintln!("[-] Uninstall failed: {}", e);
@@ -372,7 +440,30 @@ fn handle_uninstall(args: &[String]) {
     }
 }
 
-fn handle_status() {
+fn handle_status(args: &[String]) {
+    let opts = match parse_options(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[-] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if opts.help_requested {
+        print_help();
+        return;
+    }
+
+    if opts.device.is_some()
+        || opts.user.is_some()
+        || opts.silent
+        || opts.disable_channel
+        || opts.delay_ms != DEFAULT_DELAY_MS
+    {
+        eprintln!("[-] Error: 'status' takes no extra options.");
+        std::process::exit(1);
+    }
+
     print_banner();
     println!("=== Voicemeeter Status ===");
     let vm_running = voicemeeter::is_voicemeeter_running();
@@ -398,16 +489,14 @@ fn handle_status() {
 
     println!("\n=== Task Scheduler Trigger Status ===");
     match task::query_task_status() {
-        Ok(info) => {
-            let status_desc = if info.to_lowercase().contains("disabled") {
+        Ok(status) => {
+            let status_desc = if !status.is_enabled {
                 "REGISTERED (DISABLED)"
             } else {
                 "REGISTERED & READY"
             };
             println!("  Task status     : {}", status_desc);
-            for line in info.lines().take(6) {
-                println!("    {}", line);
-            }
+            println!("  XML definition  : Valid ({} bytes)", status.xml_raw.len());
         }
         Err(_) => {
             println!("  Task status     : NOT REGISTERED");
@@ -420,7 +509,7 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {
-        print_help();
+        handle_restart(&[]);
         return;
     }
 
@@ -428,8 +517,8 @@ fn main() {
         "restart" => handle_restart(&args[1..]),
         "install" => handle_install(&args[1..]),
         "uninstall" => handle_uninstall(&args[1..]),
-        "status" => handle_status(),
-        "version" | "--version" | "-v" => {
+        "status" => handle_status(&args[1..]),
+        "version" | "--version" | "-v" | "-V" => {
             println!("earplugger {}", env!("CARGO_PKG_VERSION"));
         }
         "help" | "--help" | "-h" => print_help(),
@@ -535,5 +624,59 @@ mod tests {
     #[test]
     fn test_clean_device_name_no_parentheses() {
         assert_eq!(clean_device_name("DirectSound: Audio Out"), "Audio Out");
+    }
+
+    #[test]
+    fn test_clean_device_name_multilingual() {
+        // German
+        assert_eq!(
+            clean_device_name("WDM: Lautsprecher (Realtek(R) Audio)"),
+            "Realtek(R) Audio"
+        );
+        assert_eq!(
+            clean_device_name("MME: Kopfhörer (RODE NT-USB)"),
+            "RODE NT-USB"
+        );
+        // French
+        assert_eq!(
+            clean_device_name("WDM: Haut-parleurs (2- Focusrite USB)"),
+            "Focusrite USB"
+        );
+        // Spanish
+        assert_eq!(
+            clean_device_name("WDM: Altavoces (High Definition Audio Device)"),
+            "High Definition Audio Device"
+        );
+        // Japanese
+        assert_eq!(
+            clean_device_name("WDM: スピーカー (USB Audio CODEC)"),
+            "USB Audio CODEC"
+        );
+        // Chinese
+        assert_eq!(
+            clean_device_name("WDM: 扬声器 (Realtek(R) Audio)"),
+            "Realtek(R) Audio"
+        );
+    }
+
+    #[test]
+    fn test_parse_options_device_empty_errors() {
+        let args_space = vec!["--device".to_string(), "".to_string()];
+        assert!(parse_options(&args_space).is_err());
+
+        let args_equals = vec!["--device=".to_string()];
+        assert!(parse_options(&args_equals).is_err());
+    }
+
+    #[test]
+    fn test_parse_options_user_and_disable_channel() {
+        let args = vec![
+            "--user".to_string(),
+            "WORKGROUP\\User1".to_string(),
+            "--disable-channel".to_string(),
+        ];
+        let opts = parse_options(&args).unwrap();
+        assert_eq!(opts.user, Some("WORKGROUP\\User1".to_string()));
+        assert!(opts.disable_channel);
     }
 }

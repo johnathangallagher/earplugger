@@ -29,8 +29,8 @@ Device names can contain single quotes or apostrophes (for example: `User's AirP
 Control characters (`< 0x20`) are stripped to preserve XML parser validity.
 
 ## Task Settings & Queuing
-- **MultipleInstancesPolicy**: `Queue`
-  Ensures that if multiple consecutive endpoint reconnect signals fire during complex USB device initialization, later events are queued rather than discarded.
+- **MultipleInstancesPolicy**: `IgnoreNew`
+  Ensures that if multiple consecutive endpoint reconnect signals fire (e.g. render and capture endpoints registering simultaneously upon KVM toggle), the in-flight run handles the restart while secondary triggers are dropped, eliminating restart storms.
 - **ExecutionTimeLimit**: `PT1M` (1 minute limit to prevent runaway tasks).
 - **DisallowStartIfOnBatteries**: `false` (operates normally on laptops).
 - **RunLevel**: `LeastPrivilege` (runs under user logon context without elevated tokens).
