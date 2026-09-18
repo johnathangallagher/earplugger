@@ -1,21 +1,69 @@
-MIT License
+# PolyForm Non-Commercial License 1.0.0
 
-Copyright (c) 2026 Johnathan Gallagher
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## Acceptance
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+In order to get any license under this Agreement, you must agree to its terms.
+The terms of this Agreement replace the terms of any applicable default license
+or copyright law. If you do not agree with the terms of this Agreement, do not
+use the software. However, using the software for a purpose consistent with
+this Agreement does not require an additional agreement with the Licensor.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+## Permission
+
+The Licensor grants you a non-exclusive, royalty-free, worldwide,
+non-sublicensable, non-transferable license to use the software to the extent
+and subject to the conditions below.
+
+## Conditions
+
+You may use the software only for Non-Commercial purposes.
+
+"Non-Commercial" means any use of the software that does not serve primarily
+to facilitate the commercial enhancement of the value of a product, service,
+or other offering. For purposes of this definition, "commercial enhancement"
+means any interaction with the software that could reasonably be expected to
+lead to commercial gain, e.g. the use of the software to provide a commercial
+product or service, or to advance or promote any commercial interests.
+
+You may not provide the software to third parties as a hosted or managed
+service, where the value to the third party consists of the functionality of
+the software itself, unless the Licensor gives you a separate written license
+to do so.
+
+You may not modify the software except for your own Non-Commercial use.
+
+You may not use the name, logo, or trademarks of the Licensor, or the names of
+its contributors, in any form, except for customary acknowledgment.
+
+## No Other Rights
+
+These are the only rights the Licensor grants you. The Licensor does not grant
+you any other rights, including patent, trademark, or trade-secret rights.
+
+## Termination
+
+If you use the software in violation of this Agreement, such use is not
+licensed, and your licenses are automatically terminated. If the Licensor
+notifies you in writing that you have violated this Agreement, and you cease
+all violation of this Agreement within thirty days, your licenses will be
+reinstated retroactively. If you violate this Agreement after such
+reinstatement, any additional violation of this Agreement will cause your
+licenses to be terminated automatically and permanently.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty
+or condition, and the Licensor will not be liable to you for any damages
+arising out of these terms or the software, under any kind of legal claim.***
+
+## Definitions
+
+The "Licensor" is Johnathan Gallagher <johnathan@gallagher.net>.
+
+"Software" is the earplugger software covered by this Agreement, as indicated by the
+copyright notice placed by the Licensor in source code or other form.
+
+"Use" means any use of the software that is not otherwise prevented by this
+Agreement.

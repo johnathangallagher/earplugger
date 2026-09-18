@@ -4,14 +4,24 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub const TASK_NAME: &str = "Earplugger_AutoRestart";
+pub const DEFAULT_DELAY_MS: u64 = 150;
 
 pub fn get_exe_path() -> Result<PathBuf, String> {
     env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {}", e))
 }
 
+fn get_system32_path(binary: &str) -> PathBuf {
+    let sys_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    PathBuf::from(sys_root).join("System32").join(binary)
+}
+
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for c in s.chars() {
+        // Filter out illegal XML 1.0 control characters
+        if c < ' ' && c != '\t' && c != '\n' && c != '\r' {
+            continue;
+        }
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
@@ -24,23 +34,38 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
-pub fn sanitize_xpath_literal(s: &str) -> String {
-    // Prevent XPath injection and handle quotes safely
-    // Replace single quotes and control characters
-    s.replace('\'', "")
+pub fn format_xpath_string_literal(s: &str) -> String {
+    // Strip control characters
+    let clean: String = s.chars().filter(|&c| c >= ' ' || c == '\t').collect();
+    if !clean.contains('\'') {
+        format!("'{}'", clean)
+    } else {
+        // XPath 1.0 concat() for literals containing single quotes
+        let tokens: Vec<&str> = clean.split('\'').collect();
+        let mut parts = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            if !token.is_empty() {
+                parts.push(format!("'{}'", token));
+            }
+            if i + 1 < tokens.len() {
+                parts.push("\"'\"".to_string());
+            }
+        }
+        format!("concat({})", parts.join(", "))
+    }
 }
 
 pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: u64) -> String {
     let filter_clause = match device_filter {
         Some(dev) => {
-            let sanitized = sanitize_xpath_literal(dev);
+            let formatted_literal = format_xpath_string_literal(dev);
             format!(
-                " and *[EventData[Data[@Name='DeviceName']='{}' and Data[@Name='flow']='0' and Data[@Name='NewState']='1']]",
-                sanitized
+                " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                formatted_literal
             )
         }
         None => {
-            " and *[EventData[Data[@Name='flow']='0' and Data[@Name='NewState']='1']]".to_string()
+            " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
         }
     };
 
@@ -52,7 +77,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     let escaped_subscription = xml_escape(&subscription);
     let escaped_exe = xml_escape(exe_path);
 
-    let args_val = if delay_ms != 150 {
+    let args_val = if delay_ms != DEFAULT_DELAY_MS {
         format!("restart --delay-ms {}", delay_ms)
     } else {
         "restart".to_string()
@@ -79,7 +104,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -99,7 +124,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{}</Command>
+      <Command>&quot;{}&quot;</Command>
       {}
     </Exec>
   </Actions>
@@ -108,12 +133,48 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     )
 }
 
+pub fn enable_audio_operational_log() -> Result<(), String> {
+    let wevtutil = get_system32_path("wevtutil.exe");
+    let output = Command::new(wevtutil)
+        .args(["sl", "Microsoft-Windows-Audio/Operational", "/e:true"])
+        .output()
+        .map_err(|e| format!("Failed to invoke wevtutil.exe: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "wevtutil failed to enable Microsoft-Windows-Audio/Operational log: {}",
+            err.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), String> {
+    // Ensure the Windows Audio Operational event channel is active
+    enable_audio_operational_log()?;
+
     let exe = get_exe_path()?;
     let exe_str = exe.to_string_lossy();
 
     let xml = generate_task_xml(&exe_str, device_filter, delay_ms);
-    let temp_xml_path = env::temp_dir().join("earplugger_task.xml");
+
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_xml_path = env::temp_dir().join(format!("earplugger_task_{}_{}.xml", pid, nanos));
+    let _guard = TempFileGuard(temp_xml_path.clone());
 
     let utf16: Vec<u16> = xml.encode_utf16().collect();
     let mut bytes = Vec::with_capacity(utf16.len() * 2 + 2);
@@ -126,7 +187,8 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
     fs::write(&temp_xml_path, &bytes)
         .map_err(|e| format!("Failed to write temporary XML file: {}", e))?;
 
-    let output = Command::new("schtasks")
+    let schtasks = get_system32_path("schtasks.exe");
+    let output = Command::new(schtasks)
         .args([
             "/create",
             "/tn",
@@ -136,9 +198,7 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
             "/f",
         ])
         .output()
-        .map_err(|e| format!("Failed to invoke schtasks: {}", e))?;
-
-    let _ = fs::remove_file(&temp_xml_path);
+        .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -150,10 +210,11 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
 }
 
 pub fn uninstall_task() -> Result<(), String> {
-    let output = Command::new("schtasks")
+    let schtasks = get_system32_path("schtasks.exe");
+    let output = Command::new(schtasks)
         .args(["/delete", "/tn", TASK_NAME, "/f"])
         .output()
-        .map_err(|e| format!("Failed to invoke schtasks: {}", e))?;
+        .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -164,10 +225,11 @@ pub fn uninstall_task() -> Result<(), String> {
 }
 
 pub fn query_task_status() -> Result<String, String> {
-    let output = Command::new("schtasks")
+    let schtasks = get_system32_path("schtasks.exe");
+    let output = Command::new(schtasks)
         .args(["/query", "/tn", TASK_NAME, "/fo", "LIST"])
         .output()
-        .map_err(|e| format!("Failed to invoke schtasks: {}", e))?;
+        .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -182,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_xml_escape_characters() {
-        let input = "Audio & Video <Test> \"Quote\" 'Single'";
+        let input = "Audio & Video <Test> \"Quote\" 'Single'\x07\x00";
         let escaped = xml_escape(input);
         assert_eq!(
             escaped,
@@ -191,18 +253,29 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_xpath_literal() {
-        let input = "User's RODE 'Special' Mic";
-        let sanitized = sanitize_xpath_literal(input);
-        assert_eq!(sanitized, "Users RODE Special Mic");
+    fn test_format_xpath_string_literal_without_quotes() {
+        let input = "RODE NT-USB";
+        let formatted = format_xpath_string_literal(input);
+        assert_eq!(formatted, "'RODE NT-USB'");
+    }
+
+    #[test]
+    fn test_format_xpath_string_literal_with_apostrophe() {
+        let input = "User's AirPods";
+        let formatted = format_xpath_string_literal(input);
+        assert_eq!(formatted, "concat('User', \"'\", 's AirPods')");
     }
 
     #[test]
     fn test_generate_task_xml_structure() {
         let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 150);
-        assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
+        assert!(
+            xml.contains("<Command>&quot;C:\\Audio &amp; Tools\\earplugger.exe&quot;</Command>")
+        );
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart</Arguments>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>"));
+        assert!(xml.contains("(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"));
     }
 
     #[test]

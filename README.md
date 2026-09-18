@@ -5,7 +5,7 @@
 
 > **Zero-overhead, sub-quarter-second Voicemeeter auto-resynchronizer for KVM switches and USB audio disconnects.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
 [![Rust](https://img.shields.io/badge/Language-Rust%202024-DEA584.svg)](https://www.rust-lang.org/)
 [![Latest Release](https://img.shields.io/github/v/release/johnathangallagher/earplugger?include_prereleases&color=brightgreen)](https://github.com/johnathangallagher/earplugger/releases/latest)
@@ -46,29 +46,30 @@ sequenceDiagram
     participant VM as Voicemeeter Potato
 
     KVM->>Win: Reconnects USB Device (e.g. RODE NT-USB)
-    Win->>Win: Logs Event 65 (flow=Render, state=ACTIVE)
+    Win->>Win: Logs Event 65 (Device state changed to ACTIVE)
     Win->>Task: Event Trigger Fires
-    Task->>EP: Spawns earplugger (Hidden, windowless)
+    Task->>EP: Spawns earplugger (Hidden, windowless, Queued)
     EP->>EP: Settle Delay (150ms handshake buffer)
     EP->>VM: IPC via VoicemeeterRemote64.dll (Command.Restart = 1.0)
     VM->>VM: Flushes buffers & resyncs A1 hardware clock
-    EP-->>Task: Exits cleanly in ~100ms
+    EP-->>Task: Exits cleanly in ~250–300ms
 ```
 
-1. **Native OS Event Hook:** Subscribes to `Microsoft-Windows-Audio/Operational` Event ID 65 via Windows Task Scheduler.
-2. **Precision Filter:** Only wakes up when your specific playback hardware (e.g., `RODE NT-USB`) enters state `1` (`DEVICE_STATE_ACTIVE`).
+1. **Native OS Event Hook:** Subscribes to `Microsoft-Windows-Audio/Operational` Event ID 65 via Windows Task Scheduler. `earplugger install` automatically enables this operational event channel via `wevtutil.exe` if disabled.
+2. **Precision Filter:** Wakes up when your specific audio hardware (render or capture, e.g., `RODE NT-USB`) enters state `1` (`DEVICE_STATE_ACTIVE`).
 3. **Hardware Handshake Settle:** Waits a configurable 150ms (default) so the Windows audio driver and USB bus controller finish rate negotiation.
-4. **Direct DLL Interop:** Dynamically loads `VoicemeeterRemote64.dll`, calls `VBVMR_Login()`, sets `Command.Restart = 1.0f`, and unloads via safe RAII guard.
+4. **Direct DLL Interop:** Dynamically loads the target architecture DLL (`VoicemeeterRemote64.dll` or `VoicemeeterRemote.dll`) using `LOAD_WITH_ALTERED_SEARCH_PATH`, calls `VBVMR_Login()`, sets `Command.Restart = 1.0f`, polls dirty state, and unloads via safe RAII guard.
 5. **Zero Background Presence:** When not actively handling a switch, `earplugger` consumes **0% CPU** and **0 MB RAM**.
 
 ---
 
 ### Performance & Hardened Architecture
 
-- **Sub-Millisecond Process Detection**: Uses native Win32 `CreateToolhelp32Snapshot` to check if Voicemeeter is active in **< 0.3 ms** (eliminating 235 ms subprocess overhead from `tasklist`).
+- **Sub-Millisecond Process Detection**: Uses native Win32 `CreateToolhelp32Snapshot` to check if Voicemeeter is active in **< 0.3 ms** with zero heap allocations during scanning.
 - **RAII FFI Safety**: Encapsulated within `VoicemeeterClient` implementing the Rust `Drop` trait. Guarantees `VBVMR_Logout()` and `FreeLibrary()` are always executed, preventing memory leaks and orphaned IPC slots.
-- **Injection-Safe XML Generation**: Dedicated `xml_escape` and `sanitize_xpath_literal` routines prevent XPath/XML entity corruption when handling special characters, spaces, or quotes in device names or paths.
-- **Dynamic System Paths**: Discovers Voicemeeter DLLs dynamically across `%ProgramFiles(x86)%`, `%ProgramW6432%`, `%ProgramFiles%`, and `%SystemDrive%`.
+- **Injection-Safe XML & XPath Generation**: Dedicated `xml_escape` and `format_xpath_string_literal` routines handle single quotes and control characters cleanly in device names.
+- **System32 Binary Execution**: Subprocesses (`schtasks.exe`, `wevtutil.exe`) are executed using fully-qualified paths rooted in `%SystemRoot%\System32`.
+- **Dynamic System Paths & Registry Fallbacks**: Discovers Voicemeeter DLLs dynamically across `%ProgramFiles(x86)%`, `%ProgramW6432%`, `%ProgramFiles%`, `%SystemDrive%`, and the Windows Uninstall Registry.
 
 ---
 
@@ -93,7 +94,7 @@ Open an **elevated (Administrator)** terminal and run:
 earplugger.exe install
 ```
 * `earplugger` will automatically detect your currently running Voicemeeter engine and active **Hardware A1 device**.
-* It then configures and registers the Windows Task Scheduler event trigger automatically.
+* It enables the `Microsoft-Windows-Audio/Operational` event log channel and registers the Windows Task Scheduler event trigger.
 
 To specify a custom device name or custom settling delay:
 ```powershell
@@ -121,11 +122,11 @@ Commands:
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150)
+  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150, max: 30000)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
-  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150)
+  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
 ```
 
 ---
@@ -150,4 +151,5 @@ earplugger.exe uninstall
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
