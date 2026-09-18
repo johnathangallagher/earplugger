@@ -146,8 +146,14 @@ pub fn generate_task_xml(
     let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
     let user_elem = match user {
-        Some(u) if !u.trim().is_empty() => {
-            format!("\n      <UserId>{}</UserId>", xml_escape(u.trim()))
+        Some(u) => {
+            let trimmed = u.trim();
+            let escaped = xml_escape(trimmed);
+            if !escaped.is_empty() {
+                format!("\n      <UserId>{}</UserId>", escaped)
+            } else {
+                String::new()
+            }
         }
         _ => String::new(),
     };
@@ -356,6 +362,43 @@ pub struct TaskStatusDetails {
     pub xml_raw: String,
 }
 
+pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
+    // schtasks /query /xml outputs UTF-16 LE with a BOM on Windows. Detect the BOM and
+    // decode accordingly. If no BOM is present, treat as UTF-8 (future-proofs against Wine
+    // or redirected output).
+    let xml = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+        let u16_data: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16_data).trim().to_string()
+    } else {
+        String::from_utf8_lossy(raw).trim().to_string()
+    };
+
+    // Extract only the <Settings> block to avoid trigger-level <Enabled> tags.
+    // Use relative indexing and bounds guards to prevent slicing panics on malformed XML.
+    let settings_block = if let Some(start) = xml.find("<Settings>") {
+        if let Some(end_offset) = xml[start..].find("</Settings>") {
+            &xml[start..start + end_offset]
+        } else {
+            &xml[start..]
+        }
+    } else {
+        &xml[..]
+    };
+
+    // Case-insensitive check for disabled state, ignoring whitespace variations
+    let lower = settings_block.to_ascii_lowercase();
+    let is_enabled =
+        !lower.contains("<enabled>false</enabled>") && !lower.contains("<enabled>0</enabled>");
+
+    TaskStatusDetails {
+        is_enabled,
+        xml_raw: xml,
+    }
+}
+
 pub fn query_task_status() -> Result<TaskStatusDetails, String> {
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
@@ -374,36 +417,7 @@ pub fn query_task_status() -> Result<TaskStatusDetails, String> {
         return Err(format!("Task is not registered (schtasks: {})", msg));
     }
 
-    // schtasks /query /xml outputs UTF-16 LE with a BOM on Windows. Detect the BOM and
-    // decode accordingly. If no BOM is present, treat as UTF-8 (shouldn't happen in practice
-    // but future-proofs against Wine or redirected output).
-    let raw = &output.stdout;
-    let xml = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
-        // UTF-16 LE with BOM
-        let u16_data: Vec<u16> = raw[2..]
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            .collect();
-        String::from_utf16_lossy(&u16_data).trim().to_string()
-    } else {
-        String::from_utf8_lossy(raw).trim().to_string()
-    };
-
-    // Check the task-level <Settings><Enabled> element specifically. The <Enabled> element
-    // also appears inside <EventTrigger> blocks; we locate the <Settings> section first to
-    // avoid false positives from a trigger-level disabled state.
-    let settings_start = xml.find("<Settings>").unwrap_or(0);
-    let settings_end = xml.find("</Settings>").unwrap_or(xml.len());
-    let settings_block = &xml[settings_start..settings_end];
-    // Check for both "false" and "False" since XML is case-sensitive but Task Scheduler
-    // may emit either casing depending on Windows version.
-    let is_enabled = !settings_block.contains("<Enabled>false</Enabled>")
-        && !settings_block.contains("<Enabled>False</Enabled>");
-
-    Ok(TaskStatusDetails {
-        is_enabled,
-        xml_raw: xml,
-    })
+    Ok(parse_task_xml_status(&output.stdout))
 }
 
 #[cfg(test)]
@@ -479,26 +493,28 @@ mod tests {
             raw.extend_from_slice(&u.to_le_bytes());
         }
 
-        // Replicate the decoding logic from query_task_status
-        let decoded = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
-            let u16_data: Vec<u16> = raw[2..]
-                .chunks_exact(2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .collect();
-            String::from_utf16_lossy(&u16_data).trim().to_string()
-        } else {
-            String::from_utf8_lossy(&raw).trim().to_string()
-        };
-
-        let settings_start = decoded.find("<Settings>").unwrap_or(0);
-        let settings_end = decoded.find("</Settings>").unwrap_or(decoded.len());
-        let settings_block = &decoded[settings_start..settings_end];
-        let is_enabled = !settings_block.contains("<Enabled>false</Enabled>")
-            && !settings_block.contains("<Enabled>False</Enabled>");
-
+        let status = parse_task_xml_status(&raw);
         assert!(
-            !is_enabled,
+            !status.is_enabled,
             "UTF-16 decoded disabled task should report is_enabled=false"
         );
+
+        // Also test enabled task
+        let enabled_xml = "<Task><Settings><Enabled>true</Enabled></Settings></Task>";
+        let utf16_en: Vec<u16> = enabled_xml.encode_utf16().collect();
+        let mut raw_en: Vec<u8> = vec![0xFF, 0xFE];
+        for u in &utf16_en {
+            raw_en.extend_from_slice(&u.to_le_bytes());
+        }
+        let status_en = parse_task_xml_status(&raw_en);
+        assert!(
+            status_en.is_enabled,
+            "UTF-16 decoded enabled task should report is_enabled=true"
+        );
+
+        // Test uppercase FALSE
+        let upper_xml = "<Task><Settings><Enabled>FALSE</Enabled></Settings></Task>";
+        let status_upper = parse_task_xml_status(upper_xml.as_bytes());
+        assert!(!status_upper.is_enabled);
     }
 }

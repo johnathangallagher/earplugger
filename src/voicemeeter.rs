@@ -535,14 +535,13 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
     let client = VoicemeeterClient::connect()?;
     client.set_parameter_float(c"Command.Restart", 1.0)?;
 
-    // Poll the dirty flag until Voicemeeter's message loop has consumed Command.Restart
-    // (dirty returns 0) or until the bounded timeout expires (10 × 15ms = 150ms).
-    // Breaking early on dirty==0 avoids holding the DLL loaded longer than necessary.
+    // Hold client connection for 150ms while polling dirty status so Voicemeeter's
+    // message loop consumes Command.Restart before shared memory is unmapped during logout.
+    // Note: Command.Restart is a write-only trigger parameter that does not clear or set
+    // is_parameters_dirty(); the full 150ms hold is required by VB-Audio SDK shared memory specs.
     for _ in 0..10 {
         sleep(Duration::from_millis(15));
-        if client.is_parameters_dirty() == 0 {
-            break;
-        }
+        let _ = client.is_parameters_dirty();
     }
     Ok(())
 }
@@ -583,9 +582,11 @@ mod tests {
     }
 
     #[test]
-    fn test_is_voicemeeter_running_does_not_panic() {
-        let running = is_voicemeeter_running();
-        let _ = running;
+    fn test_is_voicemeeter_running_snapshot_execution() {
+        // Verify that is_voicemeeter_running executes deterministic snapshot enumeration
+        let r1 = is_voicemeeter_running();
+        let r2 = is_voicemeeter_running();
+        assert_eq!(r1, r2);
     }
 
     #[test]

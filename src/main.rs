@@ -122,14 +122,42 @@ pub fn clean_device_name(raw: &str) -> String {
         }
     }
 
+    // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first
+    while s.ends_with(')') {
+        if let Some(last_paren) = s.rfind(" (") {
+            let inner = s[last_paren + 2..s.len() - 1].trim();
+            if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+                s = s[..last_paren].trim();
+                continue;
+            }
+        }
+        break;
+    }
+
     // Windows endpoint friendly names across all languages are formatted as:
     // "<Endpoint Role> (<Hardware Description>)"
     // e.g., "Speakers (Realtek(R) Audio)", "Lautsprecher (RODE NT-USB)", "Altavoces (USB Audio)"
-    // Use rfind to locate the LAST " (" so that endpoint role names containing parentheses
-    // (e.g. "Kopfhörer (Dynamisch) (RODE NT-USB)") correctly extract the outermost suffix group.
+    // Hardware descriptions can contain nested parentheticals (e.g. "Speakers (Realtek High Definition Audio (SST))").
+    // Walk backwards from the terminal ')' matching opening '(' by depth to accurately
+    // extract the complete hardware description without truncating nested qualifiers.
     if s.ends_with(')') {
-        if let Some(last_paren) = s.rfind(" (") {
-            let inner = s[last_paren + 2..s.len() - 1].trim();
+        let mut depth = 0;
+        let mut match_pos = None;
+        for (idx, ch) in s.char_indices().rev() {
+            if ch == ')' {
+                depth += 1;
+            } else if ch == '(' {
+                depth -= 1;
+                if depth == 0 {
+                    if idx > 0 && s.as_bytes()[idx - 1] == b' ' {
+                        match_pos = Some(idx);
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(open_idx) = match_pos {
+            let inner = s[open_idx + 1..s.len() - 1].trim();
             if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
                 s = inner;
             }
@@ -216,12 +244,24 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --device cannot be empty".to_string());
             }
+            if val
+                .chars()
+                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
+            {
+                return Err("Value for --device contains illegal control characters".to_string());
+            }
             device = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--device=") {
             let val = val_str.trim();
             if val.is_empty() {
                 return Err("Value for --device cannot be empty".to_string());
+            }
+            if val
+                .chars()
+                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
+            {
+                return Err("Value for --device contains illegal control characters".to_string());
             }
             device = Some(val.to_string());
             i += 1;
@@ -233,12 +273,24 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --user cannot be empty".to_string());
             }
+            if val
+                .chars()
+                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
+            {
+                return Err("Value for --user contains illegal control characters".to_string());
+            }
             user = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--user=") {
             let val = val_str.trim();
             if val.is_empty() {
                 return Err("Value for --user cannot be empty".to_string());
+            }
+            if val
+                .chars()
+                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
+            {
+                return Err("Value for --user contains illegal control characters".to_string());
             }
             user = Some(val.to_string());
             i += 1;
@@ -354,8 +406,14 @@ fn handle_install(args: &[String]) {
             Ok(a1) if !a1.is_empty() && a1 != "-" => {
                 println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
                 let cleaned = clean_device_name(&a1);
-                println!("[*] Filtering trigger on device: '{}'", cleaned);
-                device_name = Some(cleaned);
+                if !cleaned.is_empty() && cleaned != "-" {
+                    println!("[*] Filtering trigger on device: '{}'", cleaned);
+                    device_name = Some(cleaned);
+                } else {
+                    println!(
+                        "[!] Warning: Device name was empty after stripping prefixes. Installing wildcard trigger."
+                    );
+                }
             }
             _ => {
                 println!(
@@ -510,9 +568,14 @@ fn handle_status(args: &[String]) {
             println!("  Task status     : {}", status_desc);
             println!("  XML definition  : Valid ({} bytes)", status.xml_raw.len());
         }
-        Err(_) => {
-            println!("  Task status     : NOT REGISTERED");
-            println!("  Run 'earplugger install' to activate.");
+        Err(e) => {
+            if e.contains("not registered") {
+                println!("  Task status     : NOT REGISTERED");
+                println!("  Run 'earplugger install' to activate.");
+            } else {
+                eprintln!("  Task status     : ERROR QUERYING TASK");
+                eprintln!("  Details         : {}", e);
+            }
         }
     }
 }
@@ -525,15 +588,27 @@ fn main() {
         return;
     }
 
+    if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+        print_help();
+        return;
+    }
+
+    if args[0] == "version" || args[0] == "--version" || args[0] == "-v" || args[0] == "-V" {
+        println!("earplugger {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    // If options are passed directly (e.g. 'earplugger --silent'), delegate to default restart command
+    if args[0].starts_with('-') {
+        handle_restart(&args);
+        return;
+    }
+
     match args[0].as_str() {
         "restart" => handle_restart(&args[1..]),
         "install" => handle_install(&args[1..]),
         "uninstall" => handle_uninstall(&args[1..]),
         "status" => handle_status(&args[1..]),
-        "version" | "--version" | "-v" | "-V" => {
-            println!("earplugger {}", env!("CARGO_PKG_VERSION"));
-        }
-        "help" | "--help" | "-h" => print_help(),
         other => {
             eprintln!(
                 "Unknown command: '{}'. Run 'earplugger help' for usage.",
@@ -726,5 +801,43 @@ mod tests {
         );
         // Underscore-containing prefix should not be stripped either.
         assert_eq!(clean_device_name("USB_Audio: Output"), "USB_Audio: Output");
+    }
+
+    #[test]
+    fn test_clean_device_name_nested_hardware_parentheticals() {
+        // Hardware adapter descriptions ending with parenthetical qualifiers like (SST) or (Generic)
+        // must NOT be truncated to just the qualifier.
+        assert_eq!(
+            clean_device_name("Speakers (Realtek High Definition Audio (SST))"),
+            "Realtek High Definition Audio (SST)"
+        );
+        assert_eq!(
+            clean_device_name("Headphones (USB Audio Device (Generic))"),
+            "USB Audio Device (Generic)"
+        );
+    }
+
+    #[test]
+    fn test_clean_device_name_numeric_instance_suffixes() {
+        // Windows multi-instance numeric suffixes like " (1)" or " (2)" must be stripped,
+        // leaving the hardware name cleanly extracted.
+        assert_eq!(
+            clean_device_name("Speakers (RODE NT-USB) (1)"),
+            "RODE NT-USB"
+        );
+        assert_eq!(
+            clean_device_name("Lautsprecher (USB Audio Device) (2)"),
+            "USB Audio Device"
+        );
+    }
+
+    #[test]
+    fn test_parse_options_rejects_control_characters() {
+        // ASCII control characters (< 0x20) in device or user arguments must be rejected
+        let args_ctrl_device = vec!["--device".to_string(), "Device\x01Name".to_string()];
+        assert!(parse_options(&args_ctrl_device).is_err());
+
+        let args_ctrl_user = vec!["--user=\x1f".to_string()];
+        assert!(parse_options(&args_ctrl_user).is_err());
     }
 }

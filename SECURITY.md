@@ -6,8 +6,8 @@ Security updates are provided for the latest minor release line:
 
 | Version | Status |
 | ------- | ------ |
-| 1.2.x   | Maintained |
-| < 1.2.0 | Unsupported |
+| 1.3.x   | Maintained |
+| < 1.3.0 | Unsupported |
 
 ---
 
