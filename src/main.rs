@@ -121,29 +121,28 @@ fn handle_install(args: &[String]) {
 
     // If device not specified, try to auto-detect from active Voicemeeter A1
     if device_name.is_none() {
-        if let Ok(a1) = voicemeeter::get_a1_device_name() {
-            if !a1.is_empty() && a1 != "-" {
-                println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
-                // Extract clean hardware name if it contains e.g. "Speakers (RODE NT-USB)"
-                let cleaned = if let Some(start) = a1.find('(') {
-                    if let Some(end) = a1[start..].find(')') {
-                        let inner = &a1[start + 1..start + end];
-                        // Strip leading digits like "2- RODE NT-USB"
-                        if let Some(dash) = inner.find("- ") {
-                            inner[dash + 2..].to_string()
-                        } else {
-                            inner.to_string()
-                        }
+        let a1 = voicemeeter::get_a1_device_name().unwrap_or_default();
+        if !a1.is_empty() && a1 != "-" {
+            println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
+            // Extract clean hardware name if it contains e.g. "Speakers (RODE NT-USB)"
+            let cleaned = if let Some(start) = a1.find('(') {
+                if let Some(end) = a1[start..].find(')') {
+                    let inner = &a1[start + 1..start + end];
+                    // Strip leading digits like "2- RODE NT-USB"
+                    if let Some(dash) = inner.find("- ") {
+                        inner[dash + 2..].to_string()
                     } else {
-                        a1.clone()
+                        inner.to_string()
                     }
                 } else {
                     a1.clone()
-                };
+                }
+            } else {
+                a1.clone()
+            };
 
-                println!("[*] Filtering trigger on device: '{}'", cleaned);
-                device_name = Some(cleaned);
-            }
+            println!("[*] Filtering trigger on device: '{}'", cleaned);
+            device_name = Some(cleaned);
         }
     }
 
@@ -170,7 +169,9 @@ fn handle_install(args: &[String]) {
         Err(e) => {
             if e.to_lowercase().contains("access is denied") {
                 eprintln!("[-] Installation failed: Administrator privileges are required.");
-                eprintln!("    Please run 'earplugger install' from an elevated terminal (Run as Administrator).");
+                eprintln!(
+                    "    Please run 'earplugger install' from an elevated terminal (Run as Administrator)."
+                );
             } else {
                 eprintln!("[-] Installation failed: {}", e);
             }
@@ -192,7 +193,9 @@ fn handle_uninstall() {
         Err(e) => {
             if e.to_lowercase().contains("access is denied") {
                 eprintln!("[-] Uninstall failed: Administrator privileges are required.");
-                eprintln!("    Please run 'earplugger uninstall' from an elevated terminal (Run as Administrator).");
+                eprintln!(
+                    "    Please run 'earplugger uninstall' from an elevated terminal (Run as Administrator)."
+                );
             } else {
                 eprintln!("[-] Uninstall failed or task was not found: {}", e);
             }
@@ -215,12 +218,13 @@ fn handle_status() {
     }
 
     if vm_running {
-        if let Ok(a1) = voicemeeter::get_a1_device_name() {
-            println!(
-                "  Hardware A1     : {}",
-                if a1.is_empty() { "None" } else { &a1 }
-            );
-        }
+        let a1 = voicemeeter::get_a1_device_name().unwrap_or_default();
+        let display = if a1.is_empty() || a1 == "-" {
+            "None"
+        } else {
+            &a1
+        };
+        println!("  Hardware A1     : {}", display);
     }
 
     println!("\n=== Task Scheduler Trigger Status ===");

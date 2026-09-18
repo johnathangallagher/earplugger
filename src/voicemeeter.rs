@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
@@ -37,6 +37,18 @@ unsafe extern "system" {
     fn CloseHandle(hObject: *mut c_void) -> i32;
 }
 
+struct SnapshotGuard(*mut c_void);
+
+impl Drop for SnapshotGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -64,16 +76,17 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
         search_paths.push(base.join("VoicemeeterRemote64.dll"));
     }
 
-    search_paths.push(PathBuf::from(r"C:\Program Files (x86)\VB\Voicemeeter\VoicemeeterRemote64.dll"));
-    search_paths.push(PathBuf::from(r"C:\Program Files\VB\Voicemeeter\VoicemeeterRemote64.dll"));
-    search_paths.push(PathBuf::from(r"C:\Program Files (x86)\VB\Voicemeeter\VoicemeeterRemote.dll"));
+    search_paths.push(PathBuf::from(
+        r"C:\Program Files (x86)\VB\Voicemeeter\VoicemeeterRemote64.dll",
+    ));
+    search_paths.push(PathBuf::from(
+        r"C:\Program Files\VB\Voicemeeter\VoicemeeterRemote64.dll",
+    ));
+    search_paths.push(PathBuf::from(
+        r"C:\Program Files (x86)\VB\Voicemeeter\VoicemeeterRemote.dll",
+    ));
 
-    for p in search_paths {
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    search_paths.into_iter().find(|p| p.exists())
 }
 
 pub fn is_voicemeeter_running() -> bool {
@@ -82,6 +95,7 @@ pub fn is_voicemeeter_running() -> bool {
         if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
             return false;
         }
+        let _guard = SnapshotGuard(snapshot);
 
         let mut entry = ProcessEntry32W {
             dwSize: std::mem::size_of::<ProcessEntry32W>() as u32,
@@ -116,7 +130,6 @@ pub fn is_voicemeeter_running() -> bool {
                 );
 
                 if matches {
-                    CloseHandle(snapshot);
                     return true;
                 }
 
@@ -126,8 +139,6 @@ pub fn is_voicemeeter_running() -> bool {
                 }
             }
         }
-
-        CloseHandle(snapshot);
     }
     false
 }
@@ -155,14 +166,10 @@ impl VoicemeeterClient {
                 return Err(format!("Failed to load {}", dll_path.display()));
             }
 
-            let login_ptr = GetProcAddress(h_module, b"VBVMR_Login\0".as_ptr() as *const i8);
-            let logout_ptr = GetProcAddress(h_module, b"VBVMR_Logout\0".as_ptr() as *const i8);
-            let set_param_ptr =
-                GetProcAddress(h_module, b"VBVMR_SetParameterFloat\0".as_ptr() as *const i8);
-            let get_param_str_ptr = GetProcAddress(
-                h_module,
-                b"VBVMR_GetParameterStringW\0".as_ptr() as *const i8,
-            );
+            let login_ptr = GetProcAddress(h_module, c"VBVMR_Login".as_ptr());
+            let logout_ptr = GetProcAddress(h_module, c"VBVMR_Logout".as_ptr());
+            let set_param_ptr = GetProcAddress(h_module, c"VBVMR_SetParameterFloat".as_ptr());
+            let get_param_str_ptr = GetProcAddress(h_module, c"VBVMR_GetParameterStringW".as_ptr());
 
             if login_ptr.is_null()
                 || logout_ptr.is_null()
@@ -195,19 +202,17 @@ impl VoicemeeterClient {
         }
     }
 
-    pub fn set_parameter_float(&self, param: &[u8], val: f32) -> Result<(), String> {
-        let res = unsafe { (self.set_param_fn)(param.as_ptr() as *const i8, val) };
+    pub fn set_parameter_float(&self, param: &CStr, val: f32) -> Result<(), String> {
+        let res = unsafe { (self.set_param_fn)(param.as_ptr(), val) };
         if res < 0 {
             return Err(format!("SetParameterFloat failed with code: {}", res));
         }
         Ok(())
     }
 
-    pub fn get_parameter_string_w(&self, param: &[u8]) -> Result<String, String> {
+    pub fn get_parameter_string_w(&self, param: &CStr) -> Result<String, String> {
         let mut buffer = [0u16; 512];
-        let res = unsafe {
-            (self.get_param_str_fn)(param.as_ptr() as *const i8, buffer.as_mut_ptr())
-        };
+        let res = unsafe { (self.get_param_str_fn)(param.as_ptr(), buffer.as_mut_ptr()) };
         if res < 0 {
             return Err(format!("GetParameterStringW failed with code: {}", res));
         }
@@ -237,7 +242,7 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
     }
 
     let client = VoicemeeterClient::connect()?;
-    client.set_parameter_float(b"Command.Restart\0", 1.0)?;
+    client.set_parameter_float(c"Command.Restart", 1.0)?;
     // Keep client alive for 100ms so Voicemeeter's message loop consumes Command.Restart before logout
     sleep(Duration::from_millis(100));
     Ok(())
@@ -245,7 +250,7 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
 
 pub fn get_a1_device_name() -> Result<String, String> {
     let client = VoicemeeterClient::connect()?;
-    client.get_parameter_string_w(b"Bus[0].device.name\0")
+    client.get_parameter_string_w(c"Bus[0].device.name")
 }
 
 #[cfg(test)]
