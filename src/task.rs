@@ -378,8 +378,9 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 
     // Extract only the <Settings> block to avoid trigger-level <Enabled> tags.
     // Use relative indexing and bounds guards to prevent slicing panics on malformed XML.
-    let settings_block = if let Some(start) = xml.find("<Settings>") {
-        if let Some(end_offset) = xml[start..].find("</Settings>") {
+    let lower_xml = xml.to_ascii_lowercase();
+    let settings_block = if let Some(start) = lower_xml.find("<settings>") {
+        if let Some(end_offset) = lower_xml[start..].find("</settings>") {
             &xml[start..start + end_offset]
         } else {
             &xml[start..]
@@ -407,14 +408,14 @@ pub fn query_task_status() -> Result<TaskStatusDetails, String> {
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
-        // Capture stderr for a meaningful error rather than conflating execution failure
-        // with task-not-found.
+        // Capture both stdout and stderr since schtasks writes failure messages across both streams
         let err = String::from_utf8_lossy(&output.stderr);
-        let msg = err.trim();
-        if msg.is_empty() {
+        let out = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{} {}", out.trim(), err.trim()).trim().to_string();
+        if combined.is_empty() {
             return Err("Task is not registered".to_string());
         }
-        return Err(format!("Task is not registered (schtasks: {})", msg));
+        return Err(format!("Query failed (schtasks: {})", combined));
     }
 
     Ok(parse_task_xml_status(&output.stdout))

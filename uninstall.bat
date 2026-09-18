@@ -2,6 +2,11 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
+set "ARG=%~1"
+if /i "!ARG!"=="--help" goto show_help
+if /i "!ARG!"=="-h" goto show_help
+if "!ARG!"=="/?" goto show_help
+
 net session >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Administrator privileges are required.
@@ -14,7 +19,6 @@ set "EXTRA_ARGS="
 if /i "%~1"=="--disable-channel" (
     set "EXTRA_ARGS= --disable-channel"
 ) else if not "%~1"=="" (
-    set "ARG=%~1"
     echo [-] Unknown argument: "!ARG!"
     echo     Accepted: --disable-channel
     pause
@@ -51,3 +55,12 @@ if exist "%~dp0earplugger.exe" (
 
 echo [+] Uninstallation complete.
 pause
+exit /b 0
+
+:show_help
+echo Usage: uninstall.bat [OPTIONS]
+echo.
+echo Options:
+echo   --disable-channel   Also disable Microsoft-Windows-Audio/Operational event channel
+echo   --help, -h, /?      Show this help message
+exit /b 0

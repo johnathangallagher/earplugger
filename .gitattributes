@@ -1,0 +1,6 @@
+# Auto-detect text files and perform LF normalization by default
+* text=auto eol=lf
+
+# Batch files require CRLF line endings for reliable cmd.exe label jumping
+*.bat text eol=crlf
+*.cmd text eol=crlf

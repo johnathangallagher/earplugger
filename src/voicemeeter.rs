@@ -240,12 +240,18 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                         };
 
                         if let Some(dir) = candidate_dir {
-                            let candidate_dll = dir.join(DLL_NAME);
-                            if candidate_dll.exists() {
-                                unsafe {
-                                    RegCloseKey(hkey);
+                            // Enforce that candidate directories and DLL paths are strictly absolute.
+                            // Passing relative paths to LoadLibraryExW with LOAD_WITH_ALTERED_SEARCH_PATH
+                            // is undefined behavior in Win32, and relative path existence checks risk
+                            // DLL preloading/hijacking (CWE-426) if run from an untrusted working directory.
+                            if dir.is_absolute() {
+                                let candidate_dll = dir.join(DLL_NAME);
+                                if candidate_dll.is_absolute() && candidate_dll.exists() {
+                                    unsafe {
+                                        RegCloseKey(hkey);
+                                    }
+                                    return Some(candidate_dll);
                                 }
-                                return Some(candidate_dll);
                             }
                         }
                     }

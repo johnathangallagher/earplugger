@@ -167,7 +167,7 @@ pub fn clean_device_name(raw: &str) -> String {
     // Strip leading Windows device endpoint indices like "2- RODE NT-USB"
     if let Some(dash_idx) = s.find("- ") {
         let prefix = &s[..dash_idx];
-        if prefix.chars().all(|c| c.is_ascii_digit()) {
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
             s = s[dash_idx + 2..].trim();
         }
     }
@@ -569,7 +569,14 @@ fn handle_status(args: &[String]) {
             println!("  XML definition  : Valid ({} bytes)", status.xml_raw.len());
         }
         Err(e) => {
-            if e.contains("not registered") {
+            let lower = e.to_ascii_lowercase();
+            if e == "Task is not registered"
+                || lower.contains("cannot find")
+                || lower.contains("could not be found")
+                || lower.contains("nicht finden")
+                || lower.contains("introuvable")
+                || lower.contains("no such file")
+            {
                 println!("  Task status     : NOT REGISTERED");
                 println!("  Run 'earplugger install' to activate.");
             } else {
@@ -839,5 +846,14 @@ mod tests {
 
         let args_ctrl_user = vec!["--user=\x1f".to_string()];
         assert!(parse_options(&args_ctrl_user).is_err());
+    }
+
+    #[test]
+    fn test_clean_device_name_leading_dash_without_digit_not_stripped() {
+        // Leading dash without a preceding numeric index (e.g. "- USB Audio") must not be stripped
+        assert_eq!(clean_device_name("- USB Audio"), "- USB Audio");
+        // Numeric index followed by dash must be stripped
+        assert_eq!(clean_device_name("2- USB Audio"), "USB Audio");
+        assert_eq!(clean_device_name("10- RODE NT-USB"), "RODE NT-USB");
     }
 }
