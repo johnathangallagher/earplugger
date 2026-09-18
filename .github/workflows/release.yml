@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Package Release (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Run Tests
+        run: cargo test --target ${{ matrix.target }} --verbose
+
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create Release Artifacts
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $dist = "earplugger-$tag-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $dist
+          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination $dist/
+          Copy-Item install.bat -Destination $dist/
+          Copy-Item uninstall.bat -Destination $dist/
+          Copy-Item README.md -Destination $dist/
+          Copy-Item LICENSE -Destination $dist/
+          Copy-Item SECURITY.md -Destination $dist/
+          Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip"
+
+          New-Item -ItemType Directory -Path "upload"
+          Copy-Item "$dist.zip" -Destination "upload/"
+          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "upload/earplugger-$tag-${{ matrix.target }}.exe"
+          if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc") {
+            Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "upload/earplugger.exe"
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: upload/*
+          generate_release_notes: true
