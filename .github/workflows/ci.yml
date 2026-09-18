@@ -9,22 +9,29 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          targets: ${{ matrix.target }}
           components: clippy, rustfmt
       - name: Check Formatting
+        if: matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo fmt --check
       - name: Clippy Linter
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --target ${{ matrix.target }} --all-targets --all-features -- -D warnings
       - name: Run Tests
-        run: cargo test --verbose
+        run: cargo test --target ${{ matrix.target }} --verbose
       - name: Build Release
-        run: cargo build --release --verbose
+        run: cargo build --target ${{ matrix.target }} --release --verbose
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
-          name: earplugger-x86_64-pc-windows-msvc
-          path: target/release/earplugger.exe
+          name: earplugger-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/earplugger.exe

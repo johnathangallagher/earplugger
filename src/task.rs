@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -51,7 +52,14 @@ pub fn format_xpath_string_literal(s: &str) -> String {
                 parts.push("\"'\"".to_string());
             }
         }
-        format!("concat({})", parts.join(", "))
+        // W3C XPath 1.0 section 4.2 requires concat() to take >= 2 arguments
+        if parts.is_empty() {
+            "''".to_string()
+        } else if parts.len() == 1 {
+            format!("concat({}, '')", parts[0])
+        } else {
+            format!("concat({})", parts.join(", "))
+        }
     }
 }
 
@@ -78,9 +86,9 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     let escaped_exe = xml_escape(exe_path);
 
     let args_val = if delay_ms != DEFAULT_DELAY_MS {
-        format!("restart --delay-ms {}", delay_ms)
+        format!("restart --delay-ms {} --silent", delay_ms)
     } else {
-        "restart".to_string()
+        "restart --silent".to_string()
     };
     let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
@@ -104,7 +112,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -124,7 +132,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>&quot;{}&quot;</Command>
+      <Command>{}</Command>
       {}
     </Exec>
   </Actions>
@@ -142,8 +150,10 @@ pub fn enable_audio_operational_log() -> Result<(), String> {
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
+        let out = String::from_utf8_lossy(&output.stdout);
         return Err(format!(
-            "wevtutil failed to enable Microsoft-Windows-Audio/Operational log: {}",
+            "wevtutil failed to enable Microsoft-Windows-Audio/Operational log: {} {}",
+            out.trim(),
             err.trim()
         ));
     }
@@ -168,14 +178,6 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
 
     let xml = generate_task_xml(&exe_str, device_filter, delay_ms);
 
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let temp_xml_path = env::temp_dir().join(format!("earplugger_task_{}_{}.xml", pid, nanos));
-    let _guard = TempFileGuard(temp_xml_path.clone());
-
     let utf16: Vec<u16> = xml.encode_utf16().collect();
     let mut bytes = Vec::with_capacity(utf16.len() * 2 + 2);
     bytes.push(0xFF);
@@ -184,8 +186,36 @@ pub fn install_task(device_filter: Option<&str>, delay_ms: u64) -> Result<(), St
         bytes.extend_from_slice(&u.to_le_bytes());
     }
 
-    fs::write(&temp_xml_path, &bytes)
-        .map_err(|e| format!("Failed to write temporary XML file: {}", e))?;
+    // Atomic exclusive temporary file creation to mitigate CWE-377 / CWE-379 symlink attacks
+    let pid = std::process::id();
+    let mut temp_path = None;
+    for attempt in 0..20 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let candidate =
+            env::temp_dir().join(format!("earplugger_task_{}_{}_{}.xml", pid, nanos, attempt));
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes)
+                    .map_err(|e| format!("Failed to write temporary XML file: {}", e))?;
+                temp_path = Some(candidate);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("Failed to create secure temporary file: {}", e)),
+        }
+    }
+
+    let temp_xml_path =
+        temp_path.ok_or_else(|| "Failed to allocate unique temporary XML file".to_string())?;
+    let _guard = TempFileGuard(temp_xml_path.clone());
 
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
@@ -218,7 +248,12 @@ pub fn uninstall_task() -> Result<(), String> {
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("schtasks delete failed: {}", err.trim()));
+        let out = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "schtasks delete failed: {} {}",
+            out.trim(),
+            err.trim()
+        ));
     }
 
     Ok(())
@@ -267,20 +302,27 @@ mod tests {
     }
 
     #[test]
+    fn test_format_xpath_string_literal_single_apostrophe_arity() {
+        let input = "'";
+        let formatted = format_xpath_string_literal(input);
+        // Must satisfy XPath 1.0 concat() arity of >= 2
+        assert_eq!(formatted, "concat(\"'\", '')");
+    }
+
+    #[test]
     fn test_generate_task_xml_structure() {
         let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 150);
-        assert!(
-            xml.contains("<Command>&quot;C:\\Audio &amp; Tools\\earplugger.exe&quot;</Command>")
-        );
+        // Command element must NOT contain quotes (&quot;)
+        assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
-        assert!(xml.contains("<Arguments>restart</Arguments>"));
-        assert!(xml.contains("<MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
         assert!(xml.contains("(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"));
     }
 
     #[test]
     fn test_generate_task_xml_custom_delay() {
         let xml = generate_task_xml(r"C:\earplugger.exe", None, 200);
-        assert!(xml.contains("<Arguments>restart --delay-ms 200</Arguments>"));
+        assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
     }
 }

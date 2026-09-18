@@ -8,28 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.0] - 2026-09-18
 
 ### Security
-- Replaced predictable temporary XML file creation in `%TEMP%` with cryptographically unpredictable, process/timestamp-isolated temporary files to mitigate symlink attacks (CWE-377/CWE-379).
-- Fully qualified all system utility executions (`schtasks.exe`, `wevtutil.exe`) using `%SystemRoot%\System32` to prevent untrusted search path binary execution (CWE-426).
-- Wrapped executable command in quotes (`&quot;`) inside Task Scheduler `<Command>` definition to prevent unquoted search path vulnerabilities (CWE-428).
-- Switched library loading to `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH` to prevent directory-relative DLL search hijacking.
-- Added license change to PolyForm Noncommercial License 1.0.0.
+- Implemented atomic exclusive temporary file creation using `create_new(true)` with high-resolution timestamp and PID isolation in `%TEMP%`, mitigating symlink and junction hijacking attacks (CWE-377 / CWE-379).
+- Fully qualified all administrative utility executions (`schtasks.exe`, `wevtutil.exe`) using `%SystemRoot%\System32` to prevent untrusted search path binary execution (CWE-426).
+- Standardized Task Scheduler `<Command>` executable path definition to conform to Windows Task Scheduler XML schema specifications.
+- Switched dynamic library loading to `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH` to prevent directory-relative DLL preloading vulnerabilities.
+- Replaced deprecated `IsUserAnAdmin` with modern Win32 `OpenProcessToken` and `GetTokenInformation` `TokenElevation` checks.
+- Switched project license to PolyForm Noncommercial License 1.0.0.
 
 ### Fixed
 - Fixed FFI ABI signature mismatch for `VBVMR_GetParameterStringW` by adding the required 3rd buffer length argument (`size: i32`), preventing stack frame corruption and undefined behavior.
-- Added compile-time pointer width gating (`cfg(target_pointer_width)`) to ensure 64-bit builds load `VoicemeeterRemote64.dll` and 32-bit builds load `VoicemeeterRemote.dll`.
+- Fixed sign-extension for `HKEY_LOCAL_MACHINE` constant (`(-2147483646isize) as *mut c_void`), resolving `ERROR_INVALID_HANDLE` failures on 64-bit Windows registry queries.
+- Fixed undefined behavior in registry deserialization by allocating directly into an aligned `Vec<u16>` buffer and validating `REG_SZ` / `REG_EXPAND_SZ` types.
+- Fixed typo in Voicemeeter Banana 64-bit process matching name (`voicemeeterpro_x64.exe`), restoring auto-restart detection.
 - Fixed `VBVMR_Login()` error handling to distinguish code `0` (success) from code `1` (Voicemeeter not launched) and negative error returns.
-- Fixed XPath generation to preserve single quotes/apostrophes in device names via XPath 1.0 `concat()` instead of stripping them.
-- Fixed device name parsing to extract outermost matching parentheses (`rfind`) and strip Voicemeeter driver prefixes (`WDM:`, `MME:`, `KS:`, `ASIO:`, etc.), preventing broken device filters like `Realtek(`.
+- Fixed XPath generation to preserve single quotes and apostrophes in device names via XPath 1.0 `concat()`, enforcing the minimum 2-argument arity required by W3C specifications.
+- Fixed device name parsing to extract hardware adapters while preserving embedded trademarks (e.g. `Realtek(R) Audio`, `Intel(R) Display Audio`).
 - Automatically enable the `Microsoft-Windows-Audio/Operational` event log channel during installation via `wevtutil.exe` to guarantee Event 65 records on clean Windows installations.
-- Changed Task Scheduler `MultipleInstancesPolicy` from `IgnoreNew` to `Queue` so trailing reconnect events during KVM renegotiation are not dropped.
-- Replaced localized English string matching for Administrator privileges with native Win32 token elevation checks (`IsUserAnAdmin`).
-- Fixed exit code in `uninstall` command to return status code `1` on failure.
+- Fixed exit code in `uninstall` command to return status code `1` on failure and combined `stdout`/`stderr` reporting so errors are never blank.
+- Added check for Voicemeeter presence prior to sleeping in `restart` command to prevent idle blocking when Voicemeeter is offline.
+- Added `--help` / `-h` handling across subcommands and prevented accidental task deletion when running `uninstall --help`.
 
 ### Changed
-- Converted process snapshot matching in `is_voicemeeter_running()` to zero-allocation UTF-16 slice comparison.
+- Converted process snapshot matching in `is_voicemeeter_running()` to zero-allocation UTF-16 slice comparison against string literals.
 - Added bounds checking for `--delay-ms` (`0 <= delay <= 30000`) and support for `--flag=value` syntax.
-- Updated event filter to monitor both playback (`flow='0'`) and capture (`flow='1'`) endpoints, enabling support for USB microphones.
-- Removed flaky timing assertions from unit tests to prevent nondeterministic CI runner failures.
+- Updated event filter to monitor both playback (`flow='0'`) and capture (`flow='1'`) endpoints, with `IgnoreNew` policy to prevent double-restart storms.
+- Added `--silent` flag and `FreeConsole()` detachment for background Task Scheduler runs.
+- Synchronized Voicemeeter client cache with dirty polls before reading device parameters.
+- Harmonized author email to `johnathangallagherusa@gmail.com` across all project files.
 
 ## [1.1.1] - 2026-09-18
 

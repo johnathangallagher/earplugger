@@ -2,15 +2,60 @@ mod task;
 mod voicemeeter;
 
 use std::env;
+use std::ffi::c_void;
 use task::DEFAULT_DELAY_MS;
 
-#[link(name = "shell32")]
+const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ELEVATION_CLASS: u32 = 20;
+
+#[repr(C)]
+struct TokenElevation {
+    token_is_elevated: u32,
+}
+
+#[link(name = "advapi32")]
 unsafe extern "system" {
-    fn IsUserAnAdmin() -> i32;
+    fn OpenProcessToken(
+        process_handle: *mut c_void,
+        desired_access: u32,
+        token_handle: *mut *mut c_void,
+    ) -> i32;
+    fn GetTokenInformation(
+        token_handle: *mut c_void,
+        token_information_class: u32,
+        token_information: *mut c_void,
+        token_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut c_void;
+    fn CloseHandle(handle: *mut c_void) -> i32;
+    fn FreeConsole() -> i32;
 }
 
 pub fn is_user_admin() -> bool {
-    unsafe { IsUserAnAdmin() != 0 }
+    unsafe {
+        let mut token: *mut c_void = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TokenElevation {
+            token_is_elevated: 0,
+        };
+        let mut ret_len = 0u32;
+        let success = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION_CLASS,
+            &mut elevation as *mut _ as *mut c_void,
+            std::mem::size_of::<TokenElevation>() as u32,
+            &mut ret_len,
+        );
+        CloseHandle(token);
+        success != 0 && elevation.token_is_elevated != 0
+    }
 }
 
 fn print_banner() {
@@ -41,6 +86,7 @@ Commands:
 
 Options for 'restart':
   --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150, max: 30000)
+  --silent             Suppress interactive output (used by Task Scheduler)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
@@ -67,44 +113,61 @@ pub fn clean_device_name(raw: &str) -> String {
         }
     }
 
-    // Extract device from outer parentheses: e.g. "Speakers (Realtek(R) Audio)" -> "Realtek(R) Audio"
-    let candidate = if let Some(start) = s.find('(') {
-        if let Some(end) = s.rfind(')') {
-            if end > start { &s[start + 1..end] } else { s }
-        } else {
-            s
-        }
-    } else {
-        s
-    };
+    // Windows endpoint friendly names are formatted as: "<Endpoint Type> (<Hardware Adapter>)"
+    // e.g., "Speakers (Realtek(R) Audio)" or "Headset Earphone (2- RODE NT-USB)"
+    // Only strip the outer wrapper if the string ends with ')' and has an opening '(' preceded by a known endpoint role
+    if let Some(first_paren) = s.find('(').filter(|_| s.ends_with(')')) {
+        let prefix = s[..first_paren].trim();
+        let is_endpoint_role = prefix.contains("Speaker")
+            || prefix.contains("Headphone")
+            || prefix.contains("Headset")
+            || prefix.contains("Earphone")
+            || prefix.contains("Mic")
+            || prefix.contains("Audio")
+            || prefix.contains("Line")
+            || prefix.contains("Digital");
 
-    let trimmed = candidate.trim();
-
-    // Strip leading Windows device endpoint indices like "2- RODE NT-USB"
-    if let Some(dash_idx) = trimmed.find("- ") {
-        let prefix = &trimmed[..dash_idx];
-        if prefix.chars().all(|c| c.is_ascii_digit()) {
-            return trimmed[dash_idx + 2..].trim().to_string();
+        if is_endpoint_role {
+            let inner = &s[first_paren + 1..s.len() - 1];
+            s = inner.trim();
         }
     }
 
-    trimmed.to_string()
+    // Strip leading Windows device endpoint indices like "2- RODE NT-USB"
+    if let Some(dash_idx) = s.find("- ") {
+        let prefix = &s[..dash_idx];
+        if prefix.chars().all(|c| c.is_ascii_digit()) {
+            s = s[dash_idx + 2..].trim();
+        }
+    }
+
+    s.to_string()
 }
 
 pub struct ParsedArgs {
     pub delay_ms: u64,
     pub device: Option<String>,
+    pub silent: bool,
+    pub help_requested: bool,
 }
 
 pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut delay_ms = DEFAULT_DELAY_MS;
     let mut device: Option<String> = None;
+    let mut silent = false;
+    let mut help_requested = false;
     let mut i = 0;
 
     while i < args.len() {
         let arg = &args[i];
 
-        if arg == "--delay-ms" {
+        if arg == "--help" || arg == "-h" {
+            help_requested = true;
+            i += 1;
+        } else if arg == "--silent" {
+            silent = true;
+            i += 1;
+        } else if arg == "--delay-ms" {
             if i + 1 >= args.len() {
                 return Err("Missing value for --delay-ms".to_string());
             }
@@ -145,10 +208,15 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
         }
     }
 
-    Ok(ParsedArgs { delay_ms, device })
+    Ok(ParsedArgs {
+        delay_ms,
+        device,
+        silent,
+        help_requested,
+    })
 }
 
-fn handle_restart(args: &[String], is_interactive: bool) {
+fn handle_restart(args: &[String]) {
     let opts = match parse_options(args) {
         Ok(o) => o,
         Err(e) => {
@@ -157,28 +225,57 @@ fn handle_restart(args: &[String], is_interactive: bool) {
         }
     };
 
-    if opts.delay_ms > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(opts.delay_ms));
+    if opts.help_requested {
+        print_help();
+        return;
     }
 
+    if opts.silent {
+        // Suppress console window allocation in background Task Scheduler runs
+        unsafe {
+            FreeConsole();
+        }
+    }
+
+    // Verify Voicemeeter is running BEFORE blocking on delay_ms
     if !voicemeeter::is_voicemeeter_running() {
-        if is_interactive {
-            println!(
-                "[earplugger] Voicemeeter process not detected. Audio engine restart skipped."
+        if !opts.silent {
+            eprintln!(
+                "[earplugger] Error: Voicemeeter process not detected. Audio engine restart skipped."
             );
+            std::process::exit(1);
         }
         return;
     }
 
+    if opts.delay_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(opts.delay_ms));
+    }
+
     if let Err(e) = voicemeeter::restart_audio_engine(0) {
-        eprintln!("[earplugger] Error: {}", e);
+        if !opts.silent {
+            eprintln!("[earplugger] Error: {}", e);
+        }
         std::process::exit(1);
-    } else if is_interactive {
+    } else if !opts.silent {
         println!("[earplugger] Successfully triggered Voicemeeter audio engine restart.");
     }
 }
 
 fn handle_install(args: &[String]) {
+    let opts = match parse_options(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[-] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if opts.help_requested {
+        print_help();
+        return;
+    }
+
     print_banner();
 
     if !is_user_admin() {
@@ -189,24 +286,23 @@ fn handle_install(args: &[String]) {
         std::process::exit(1);
     }
 
-    let opts = match parse_options(args) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("[-] Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
     let mut device_name = opts.device;
 
     // If device not specified, try to auto-detect from active Voicemeeter A1
     if device_name.is_none() {
-        let a1 = voicemeeter::get_a1_device_name().unwrap_or_default();
-        if !a1.is_empty() && a1 != "-" {
-            println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
-            let cleaned = clean_device_name(&a1);
-            println!("[*] Filtering trigger on device: '{}'", cleaned);
-            device_name = Some(cleaned);
+        match voicemeeter::get_a1_device_name() {
+            Ok(a1) if !a1.is_empty() && a1 != "-" => {
+                println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
+                let cleaned = clean_device_name(&a1);
+                println!("[*] Filtering trigger on device: '{}'", cleaned);
+                device_name = Some(cleaned);
+            }
+            _ => {
+                println!(
+                    "[!] Warning: Voicemeeter is not running or no active Hardware A1 device was detected."
+                );
+                println!("    Installing wildcard event trigger for any active audio endpoint.");
+            }
         }
     }
 
@@ -237,7 +333,20 @@ fn handle_install(args: &[String]) {
     }
 }
 
-fn handle_uninstall() {
+fn handle_uninstall(args: &[String]) {
+    let opts = match parse_options(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[-] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if opts.help_requested {
+        print_help();
+        return;
+    }
+
     print_banner();
 
     if !is_user_admin() {
@@ -290,7 +399,12 @@ fn handle_status() {
     println!("\n=== Task Scheduler Trigger Status ===");
     match task::query_task_status() {
         Ok(info) => {
-            println!("  Task status     : REGISTERED & READY");
+            let status_desc = if info.to_lowercase().contains("disabled") {
+                "REGISTERED (DISABLED)"
+            } else {
+                "REGISTERED & READY"
+            };
+            println!("  Task status     : {}", status_desc);
             for line in info.lines().take(6) {
                 println!("    {}", line);
             }
@@ -306,15 +420,14 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {
-        // Default execution (e.g. from Task Scheduler event trigger): run restart non-interactively
-        handle_restart(&[], false);
+        print_help();
         return;
     }
 
     match args[0].as_str() {
-        "restart" => handle_restart(&args[1..], true),
+        "restart" => handle_restart(&args[1..]),
         "install" => handle_install(&args[1..]),
-        "uninstall" => handle_uninstall(),
+        "uninstall" => handle_uninstall(&args[1..]),
         "status" => handle_status(),
         "version" | "--version" | "-v" => {
             println!("earplugger {}", env!("CARGO_PKG_VERSION"));
@@ -340,6 +453,8 @@ mod tests {
         let opts = parse_options(&args).unwrap();
         assert_eq!(opts.delay_ms, DEFAULT_DELAY_MS);
         assert_eq!(opts.device, None);
+        assert!(!opts.silent);
+        assert!(!opts.help_requested);
     }
 
     #[test]
@@ -349,10 +464,12 @@ mod tests {
             "120".to_string(),
             "--device".to_string(),
             "RODE NT-USB".to_string(),
+            "--silent".to_string(),
         ];
         let opts = parse_options(&args).unwrap();
         assert_eq!(opts.delay_ms, 120);
         assert_eq!(opts.device, Some("RODE NT-USB".to_string()));
+        assert!(opts.silent);
     }
 
     #[test]
@@ -364,6 +481,13 @@ mod tests {
         let opts = parse_options(&args).unwrap();
         assert_eq!(opts.delay_ms, 250);
         assert_eq!(opts.device, Some("User's AirPods".to_string()));
+    }
+
+    #[test]
+    fn test_parse_options_help_flag() {
+        let args = vec!["--help".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(opts.help_requested);
     }
 
     #[test]
@@ -395,6 +519,16 @@ mod tests {
         assert_eq!(
             clean_device_name("ASIO: Focusrite USB ASIO"),
             "Focusrite USB ASIO"
+        );
+    }
+
+    #[test]
+    fn test_clean_device_name_trademark_preserved() {
+        // Crucial test: Realtek(R) Audio and Intel(R) Display Audio must NOT be mangled to "R"
+        assert_eq!(clean_device_name("Realtek(R) Audio"), "Realtek(R) Audio");
+        assert_eq!(
+            clean_device_name("Intel(R) Display Audio"),
+            "Intel(R) Display Audio"
         );
     }
 

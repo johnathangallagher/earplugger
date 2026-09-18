@@ -65,7 +65,9 @@ unsafe extern "system" {
     fn RegCloseKey(hKey: *mut c_void) -> i32;
 }
 
-const HKEY_LOCAL_MACHINE: *mut c_void = 0x80000002usize as *mut c_void;
+// Predefined keys in Windows SDK are sign-extended 32-bit values: ((HKEY)(ULONG_PTR)((LONG)0x80000002))
+// On 64-bit Windows, (LONG)0x80000002 (-2147483646) sign-extends to 0xFFFFFFFF80000002.
+const HKEY_LOCAL_MACHINE: *mut c_void = (-2147483646isize) as *mut c_void;
 const KEY_READ: u32 = 0x20019;
 const KEY_WOW64_32KEY: u32 = 0x0200;
 
@@ -106,8 +108,9 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                 )
             };
             if status == 0 && !hkey.is_null() {
-                let mut data_len: u32 = 1024;
-                let mut buf = vec![0u8; data_len as usize];
+                // Use Vec<u16> to ensure proper 2-byte alignment for wide string deserialization
+                let mut buf = vec![0u16; 512];
+                let mut data_len = (buf.len() * std::mem::size_of::<u16>()) as u32;
                 let mut val_type: u32 = 0;
                 let query_res = unsafe {
                     RegQueryValueExW(
@@ -115,21 +118,17 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                         val_name.as_ptr(),
                         std::ptr::null_mut(),
                         &mut val_type,
-                        buf.as_mut_ptr(),
+                        buf.as_mut_ptr() as *mut u8,
                         &mut data_len,
                     )
                 };
                 unsafe {
                     RegCloseKey(hkey);
                 }
-                if query_res == 0 && data_len > 0 {
-                    // UninstallString is typically "C:\Program Files (x86)\VB\Voicemeeter\voicemeeterprosetup.exe"
-                    let u16_slice: &[u16] = unsafe {
-                        std::slice::from_raw_parts(
-                            buf.as_ptr() as *const u16,
-                            (data_len / 2) as usize,
-                        )
-                    };
+                // Check success, valid string types (REG_SZ = 1, REG_EXPAND_SZ = 2), and non-empty length
+                if query_res == 0 && (val_type == 1 || val_type == 2) && data_len >= 2 {
+                    let char_count = (data_len as usize) / 2;
+                    let u16_slice = &buf[..char_count];
                     let len = u16_slice
                         .iter()
                         .position(|&c| c == 0)
@@ -190,46 +189,33 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
 }
 
 #[inline]
-fn eq_ignore_ascii_case_wide(a: &[u16], b: &[u16]) -> bool {
-    if a.len() != b.len() {
+pub fn eq_ignore_ascii_case_wide_str(wide: &[u16], ascii: &str) -> bool {
+    if wide.len() != ascii.len() {
         return false;
     }
-    a.iter().zip(b.iter()).all(|(&x, &y)| {
-        let cx = if (b'A' as u16..=b'Z' as u16).contains(&x) {
-            x + 32
+    wide.iter().zip(ascii.bytes()).all(|(&w, b)| {
+        let cw = if (b'A' as u16..=b'Z' as u16).contains(&w) {
+            w + 32
         } else {
-            x
+            w
         };
-        let cy = if (b'A' as u16..=b'Z' as u16).contains(&y) {
-            y + 32
+        let cb = if b.is_ascii_uppercase() {
+            (b + 32) as u16
         } else {
-            y
+            b as u16
         };
-        cx == cy
+        cw == cb
     })
 }
 
-// UTF-16 representations of known Voicemeeter executable binaries for zero-allocation matching
-const VM_EXES: &[&[u16]] = &[
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 56, 120, 54, 52, 46, 101, 120, 101,
-    ], // voicemeeter8x64.exe
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 56, 46, 101, 120, 101,
-    ], // voicemeeter8.exe
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 112, 114, 111, 95, 120, 54, 52, 46,
-        101, 120, 101,
-    ], // voicemeeterpro_x64.exe
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 112, 114, 111, 46, 101, 120, 101,
-    ], // voicemeeterpro.exe
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 95, 120, 54, 52, 46, 101, 120, 101,
-    ], // voicemeeter_x64.exe
-    &[
-        118, 111, 105, 99, 101, 109, 101, 101, 116, 101, 114, 46, 101, 120, 101,
-    ], // voicemeeter.exe
+// Known Voicemeeter executable binary names for zero-allocation process matching
+pub const VM_EXE_NAMES: &[&str] = &[
+    "voicemeeter8x64.exe",
+    "voicemeeter8.exe",
+    "voicemeeterpro_x64.exe",
+    "voicemeeterpro.exe",
+    "voicemeeter_x64.exe",
+    "voicemeeter.exe",
 ];
 
 pub fn is_voicemeeter_running() -> bool {
@@ -262,8 +248,8 @@ pub fn is_voicemeeter_running() -> bool {
                     .unwrap_or(entry.szExeFile.len());
                 let exe_slice = &entry.szExeFile[..len];
 
-                for &target in VM_EXES {
-                    if eq_ignore_ascii_case_wide(exe_slice, target) {
+                for &target in VM_EXE_NAMES {
+                    if eq_ignore_ascii_case_wide_str(exe_slice, target) {
                         return true;
                     }
                 }
@@ -409,7 +395,7 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
     let client = VoicemeeterClient::connect()?;
     client.set_parameter_float(c"Command.Restart", 1.0)?;
 
-    // Poll parameters dirty status with bounded sleep so Voicemeeter consumes Command.Restart
+    // Poll parameters dirty status with bounded sleep (150ms total) so Voicemeeter consumes Command.Restart
     for _ in 0..10 {
         sleep(Duration::from_millis(15));
         let _ = client.is_parameters_dirty();
@@ -419,6 +405,11 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
 
 pub fn get_a1_device_name() -> Result<String, String> {
     let client = VoicemeeterClient::connect()?;
+    // Synchronize client cache before querying parameter
+    for _ in 0..3 {
+        sleep(Duration::from_millis(15));
+        let _ = client.is_parameters_dirty();
+    }
     client.get_parameter_string_w(c"Bus[0].device.name")
 }
 
@@ -439,25 +430,57 @@ mod tests {
     }
 
     #[test]
+    fn test_hkey_local_machine_sign_extension() {
+        // Assert that HKEY_LOCAL_MACHINE is properly sign-extended to 0xFFFFFFFF80000002 on 64-bit targets
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(HKEY_LOCAL_MACHINE as usize, 0xFFFFFFFF80000002usize);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(HKEY_LOCAL_MACHINE as usize, 0x80000002usize);
+    }
+
+    #[test]
     fn test_is_voicemeeter_running_does_not_panic() {
         let running = is_voicemeeter_running();
-        // Simply assert the function runs cleanly and produces a boolean result
         let _ = running;
     }
 
     #[test]
     fn test_ascii_case_insensitive_wide_matching() {
-        let a = to_wide_str("VoiceMeeterPro.exe");
-        let b = to_wide_str("voicemeeterpro.exe");
-        assert!(eq_ignore_ascii_case_wide(
-            &a[..a.len() - 1],
-            &b[..b.len() - 1]
+        let wide = to_wide_str("VoicemeeterPro_x64.exe");
+        assert!(eq_ignore_ascii_case_wide_str(
+            &wide[..wide.len() - 1],
+            "voicemeeterpro_x64.exe"
         ));
 
-        let c = to_wide_str("other_process.exe");
-        assert!(!eq_ignore_ascii_case_wide(
-            &a[..a.len() - 1],
-            &c[..c.len() - 1]
+        let other = to_wide_str("chrome.exe");
+        assert!(!eq_ignore_ascii_case_wide_str(
+            &other[..other.len() - 1],
+            "voicemeeterpro_x64.exe"
         ));
+    }
+
+    #[test]
+    fn test_all_known_voicemeeter_binaries_match() {
+        for &expected_name in VM_EXE_NAMES {
+            let wide = to_wide_str(expected_name);
+            let slice = &wide[..wide.len() - 1];
+            let matched = VM_EXE_NAMES
+                .iter()
+                .any(|&target| eq_ignore_ascii_case_wide_str(slice, target));
+            assert!(matched, "Failed to match binary name: {}", expected_name);
+
+            // Also test uppercase variant
+            let upper = expected_name.to_uppercase();
+            let wide_upper = to_wide_str(&upper);
+            let slice_upper = &wide_upper[..wide_upper.len() - 1];
+            let matched_upper = VM_EXE_NAMES
+                .iter()
+                .any(|&target| eq_ignore_ascii_case_wide_str(slice_upper, target));
+            assert!(
+                matched_upper,
+                "Failed to match uppercase binary name: {}",
+                upper
+            );
+        }
     }
 }
