@@ -3,13 +3,15 @@
 > [!NOTE]
 > **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
 
+> **Zero-overhead, sub-half-second Voicemeeter auto-resynchronizer for KVM switches and USB audio disconnects.**
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
 [![Rust](https://img.shields.io/badge/Language-Rust%202024-DEA584.svg)](https://www.rust-lang.org/)
 
 ---
 
-## The Problem: Why KVM Switches Murder Voicemeeter
+### The Problem: Why KVM Switches Murder Voicemeeter
 
 If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switch**, USB audio switch, or hotpluggable DAC/headset, you know the pain:
 
@@ -20,7 +22,7 @@ If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switc
 
 ---
 
-## Why Existing Solutions Fall Short
+### Why Existing Solutions Fall Short
 
 | Approach | Latency | Overhead | Failure Mode |
 | :--- | :--- | :--- | :--- |
@@ -32,7 +34,7 @@ If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switc
 
 ---
 
-## How It Works
+### How It Works
 
 ```mermaid
 sequenceDiagram
