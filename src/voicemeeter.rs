@@ -238,6 +238,8 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
 
     let client = VoicemeeterClient::connect()?;
     client.set_parameter_float(b"Command.Restart\0", 1.0)?;
+    // Keep client alive for 100ms so Voicemeeter's message loop consumes Command.Restart before logout
+    sleep(Duration::from_millis(100));
     Ok(())
 }
 

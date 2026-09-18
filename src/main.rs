@@ -3,7 +3,7 @@ mod voicemeeter;
 
 use std::env;
 
-const DEFAULT_DELAY_MS: u64 = 75;
+const DEFAULT_DELAY_MS: u64 = 150;
 
 fn print_banner() {
     println!(
@@ -32,11 +32,11 @@ Commands:
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 75)
+  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
-  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 75)
+  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150)
 
 Examples:
   earplugger restart
@@ -273,21 +273,21 @@ mod tests {
     #[test]
     fn test_parse_delay_arg_default() {
         let args: Vec<String> = vec![];
-        let delay = parse_delay_arg(&args, 75).unwrap();
-        assert_eq!(delay, 75);
+        let delay = parse_delay_arg(&args, 150).unwrap();
+        assert_eq!(delay, 150);
     }
 
     #[test]
     fn test_parse_delay_arg_custom() {
         let args = vec!["--delay-ms".to_string(), "120".to_string()];
-        let delay = parse_delay_arg(&args, 75).unwrap();
+        let delay = parse_delay_arg(&args, 150).unwrap();
         assert_eq!(delay, 120);
     }
 
     #[test]
     fn test_parse_delay_arg_invalid() {
         let args = vec!["--delay-ms".to_string(), "invalid".to_string()];
-        assert!(parse_delay_arg(&args, 75).is_err());
+        assert!(parse_delay_arg(&args, 150).is_err());
     }
 
     #[test]

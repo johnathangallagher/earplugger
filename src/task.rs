@@ -52,7 +52,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     let escaped_subscription = xml_escape(&subscription);
     let escaped_exe = xml_escape(exe_path);
 
-    let args_val = if delay_ms != 75 {
+    let args_val = if delay_ms != 150 {
         format!("restart --delay-ms {}", delay_ms)
     } else {
         "restart".to_string()
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_structure() {
-        let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 75);
+        let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 150);
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart</Arguments>"));
