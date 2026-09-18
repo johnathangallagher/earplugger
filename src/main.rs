@@ -124,7 +124,6 @@ const ENDPOINT_ROLES: &[&str] = &[
     "haut-parleurs",
     "casque",
     "microphone",
-    "micro",
     "line in",
     "line out",
     "digital audio",
@@ -207,7 +206,7 @@ pub fn clean_device_name(raw: &str) -> String {
             let role = s[..open_idx].trim();
             let role_lower = role.to_lowercase();
             let is_role = ENDPOINT_ROLES.iter().any(|&r| {
-                role.eq_ignore_ascii_case(r) || role_lower.contains(r) || role.contains(r)
+                role.eq_ignore_ascii_case(r) || role_lower.split_whitespace().any(|w| w == r)
             });
             if is_role {
                 let inner = s[open_idx + 1..s.len() - 1].trim();
@@ -301,9 +300,6 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
             }
-            if val.contains('\'') && val.contains('"') {
-                return Err("Device name cannot contain both single and double quotes".to_string());
-            }
             device = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--device=") {
@@ -313,9 +309,6 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             }
             if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
-            }
-            if val.contains('\'') && val.contains('"') {
-                return Err("Device name cannot contain both single and double quotes".to_string());
             }
             device = Some(val.to_string());
             i += 1;
@@ -948,8 +941,22 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_options_rejects_mixed_quotes() {
+    fn test_parse_options_allows_mixed_quotes() {
         let args = vec![r#"--device=User's "DAC""#.to_string()];
-        assert!(parse_options(&args).is_err());
+        let opts = parse_options(&args).unwrap();
+        assert_eq!(opts.device.as_deref(), Some(r#"User's "DAC""#));
+    }
+
+    #[test]
+    fn test_clean_device_name_micro_brands_not_truncated() {
+        // Brands starting with "micro" (Microchip, Micronas, Micro-Star) must NOT be mistaken for "microphone" role.
+        assert_eq!(
+            clean_device_name("Microchip Audio (SST)"),
+            "Microchip Audio (SST)"
+        );
+        assert_eq!(
+            clean_device_name("Micronas USB DAC (Generic)"),
+            "Micronas USB DAC (Generic)"
+        );
     }
 }

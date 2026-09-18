@@ -24,7 +24,7 @@
 
 ### XPath Literal Sanitization
 Device names can contain single quotes or apostrophes (for example: `User's AirPods`). Because the Windows Event Log query engine (`wevtapi.dll`) implements a restricted subset of XPath 1.0 where functions like `concat()` are unsupported (producing error `15008`), `earplugger` formats strings containing apostrophes using double-quoted string literals:
-`Data[@Name="DeviceName"]="User's AirPods"` (which is XML-escaped to `&quot;User&apos;s AirPods&quot;`).
+`Data[@Name='DeviceName']="User's AirPods"` (which is XML-escaped to `Data[@Name=&apos;DeviceName&apos;]=&quot;User&apos;s AirPods&quot;`).
 
 Control characters (`< 0x20`) are stripped to preserve XML parser validity.
 

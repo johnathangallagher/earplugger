@@ -348,15 +348,14 @@ pub fn install_task(
         temp_path.ok_or_else(|| "Failed to allocate unique temporary XML file".to_string())?;
     let _guard = TempFileGuard(temp_xml_path.clone());
 
-    // Verify the temp path is valid UTF-8 before passing to schtasks; to_string_lossy() would
-    // silently corrupt non-UTF-8 paths (e.g. %TEMP% on Japanese Windows with Shift-JIS profile).
-    let temp_str = temp_xml_path
-        .to_str()
-        .ok_or_else(|| "Temporary file path contains non-UTF-8 characters".to_string())?;
-
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
-        .args(["/create", "/tn", TASK_NAME, "/xml", temp_str, "/f"])
+        .arg("/create")
+        .arg("/tn")
+        .arg(TASK_NAME)
+        .arg("/xml")
+        .arg(&temp_xml_path)
+        .arg("/f")
         .output()
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
@@ -410,7 +409,7 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         String::from_utf8_lossy(raw).trim().to_string()
     };
 
-    // Extract only the <Settings> block to avoid trigger-level <Enabled> tags.
+    // Extract <Settings> block to check task-level enabled status.
     // Use relative indexing and bounds guards to prevent slicing panics on malformed XML.
     let lower_xml = xml.to_ascii_lowercase();
     let settings_block = if let Some(start) = lower_xml.find("<settings>") {
@@ -424,10 +423,10 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     };
 
     // Case-insensitive check for disabled state, ignoring whitespace variations inside <Enabled>...</Enabled>
-    let lower = settings_block.to_ascii_lowercase();
-    let is_enabled = if let Some(e_start) = lower.find("<enabled>") {
-        if let Some(e_end) = lower[e_start + 9..].find("</enabled>") {
-            let val = lower[e_start + 9..e_start + 9 + e_end].trim();
+    let lower_settings = settings_block.to_ascii_lowercase();
+    let settings_enabled = if let Some(e_start) = lower_settings.find("<enabled>") {
+        if let Some(e_end) = lower_settings[e_start + 9..].find("</enabled>") {
+            let val = lower_settings[e_start + 9..e_start + 9 + e_end].trim();
             val != "false" && val != "0"
         } else {
             true
@@ -435,6 +434,29 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     } else {
         true
     };
+
+    // Also check trigger-level <Enabled> tag inside <EventTrigger>
+    let trigger_enabled = if let Some(t_start) = lower_xml.find("<eventtrigger>") {
+        if let Some(t_end) = lower_xml[t_start..].find("</eventtrigger>") {
+            let trigger_block = &lower_xml[t_start..t_start + t_end];
+            if let Some(e_start) = trigger_block.find("<enabled>") {
+                if let Some(e_end) = trigger_block[e_start + 9..].find("</enabled>") {
+                    let val = trigger_block[e_start + 9..e_start + 9 + e_end].trim();
+                    val != "false" && val != "0"
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let is_enabled = settings_enabled && trigger_enabled;
 
     TaskStatusDetails {
         is_enabled,
@@ -452,9 +474,11 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
 
     if !output.status.success() {
         // If the task file in System32\Tasks does not exist, the task is definitely not registered.
-        // This provides 100% reliable, language-independent detection without console scraping.
-        if !task_file.exists() {
-            return Ok(None);
+        // Check metadata explicitly to only treat ErrorKind::NotFound as not registered,
+        // preventing permission denial or other I/O errors on System32\Tasks from falsely returning Ok(None).
+        match fs::metadata(&task_file) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => {}
         }
 
         // Capture both stdout and stderr since schtasks writes failure messages across both streams
@@ -598,5 +622,13 @@ mod tests {
             raw.extend_from_slice(&u.to_le_bytes());
         }
         assert_eq!(decode_process_output(&raw), "Error: File not found");
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_disabled_trigger() {
+        // When task settings are enabled but EventTrigger is disabled, task status must be disabled.
+        let trigger_disabled_xml = r#"<Task version="1.4"><Triggers><EventTrigger><Enabled>false</Enabled></EventTrigger></Triggers><Settings><Enabled>true</Enabled></Settings></Task>"#;
+        let status = parse_task_xml_status(trigger_disabled_xml.as_bytes());
+        assert!(!status.is_enabled);
     }
 }

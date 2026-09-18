@@ -412,6 +412,7 @@ pub fn is_voicemeeter_running() -> bool {
                     }
                 }
 
+                entry.dwSize = std::mem::size_of::<ProcessEntry32W>() as u32;
                 if Process32NextW(snapshot, &mut entry) == 0 {
                     break;
                 }

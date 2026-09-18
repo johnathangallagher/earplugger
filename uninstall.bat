@@ -1,18 +1,18 @@
 @echo off
+setlocal EnableDelayedExpansion
 set "RAW_ARG=%~1"
-if /i "%RAW_ARG%"=="--help" goto show_help
-if /i "%RAW_ARG%"=="-h" goto show_help
-if "%RAW_ARG%"=="/?" goto show_help
+if /i "!RAW_ARG!"=="--help" goto show_help
+if /i "!RAW_ARG!"=="-h" goto show_help
+if "!RAW_ARG!"=="/?" goto show_help
 
 net session >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo [-] Administrator privileges are required.
     echo     Please right-click uninstall.bat and select 'Run as administrator'.
     pause
     exit /b 1
 )
 
-setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "EXTRA_ARGS="

@@ -1,18 +1,18 @@
 @echo off
+setlocal EnableDelayedExpansion
 set "RAW_ARG=%~1"
-if /i "%RAW_ARG%"=="--help" goto show_help
-if /i "%RAW_ARG%"=="-h" goto show_help
-if "%RAW_ARG%"=="/?" goto show_help
+if /i "!RAW_ARG!"=="--help" goto show_help
+if /i "!RAW_ARG!"=="-h" goto show_help
+if "!RAW_ARG!"=="/?" goto show_help
 
 net session >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo [-] Administrator privileges are required.
     echo     Please right-click install.bat and select 'Run as administrator'.
     pause
     exit /b 1
 )
 
-setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "EXE_PATH="
@@ -41,12 +41,13 @@ set "OPT_USER="
 if "%~1"=="" goto run_install
 
 rem Support --help, -h, /?
-if /i "%~1"=="--help" goto show_help
-if /i "%~1"=="-h" goto show_help
-if "%~1"=="/?" goto show_help
+set "ARG=%~1"
+if /i "!ARG!"=="--help" goto show_help
+if /i "!ARG!"=="-h" goto show_help
+if "!ARG!"=="/?" goto show_help
 
 rem Support --device <NAME>
-if /i "%~1"=="--device" (
+if /i "!ARG!"=="--device" (
     if "%~2"=="" (
         echo [-] Missing value for --device
         pause
@@ -57,9 +58,9 @@ if /i "%~1"=="--device" (
 )
 
 rem Support --device=<NAME>
-set "ARG=%~1"
 if /i "!ARG:~0,9!"=="--device=" (
-    for /f "delims=" %%V in ("!ARG:~9!") do set "OPT_DEVICE=%%~V"
+    set "OPT_DEVICE=!ARG:~9!"
+    if "!OPT_DEVICE:~0,1!"=="""" if "!OPT_DEVICE:~-1!"=="""" set "OPT_DEVICE=!OPT_DEVICE:~1,-1!"
     if not defined OPT_DEVICE (
         echo [-] Missing value for --device
         pause
@@ -69,13 +70,14 @@ if /i "!ARG:~0,9!"=="--device=" (
 )
 
 rem Support --delay-ms <MS>
-if /i "%~1"=="--delay-ms" (
+if /i "!ARG!"=="--delay-ms" (
     if "%~2"=="" (
         echo [-] Missing value for --delay-ms
         pause
         exit /b 1
     )
-    for /f "delims=0123456789 eol=" %%A in ("%~2") do (
+    set "TEST_VAL=%~2"
+    for /f "eol=a delims=0123456789" %%A in ("!TEST_VAL!") do (
         echo [-] Invalid numeric value for --delay-ms: "%~2"
         pause
         exit /b 1
@@ -86,13 +88,14 @@ if /i "%~1"=="--delay-ms" (
 
 rem Support --delay-ms=<MS>
 if /i "!ARG:~0,11!"=="--delay-ms=" (
-    for /f "delims=" %%V in ("!ARG:~11!") do set "OPT_DELAY=%%~V"
+    set "OPT_DELAY=!ARG:~11!"
+    if "!OPT_DELAY:~0,1!"=="""" if "!OPT_DELAY:~-1!"=="""" set "OPT_DELAY=!OPT_DELAY:~1,-1!"
     if not defined OPT_DELAY (
         echo [-] Missing value for --delay-ms
         pause
         exit /b 1
     )
-    for /f "delims=0123456789 eol=" %%A in ("!OPT_DELAY!") do (
+    for /f "eol=a delims=0123456789" %%A in ("!OPT_DELAY!") do (
         echo [-] Invalid numeric value for --delay-ms: "!OPT_DELAY!"
         pause
         exit /b 1
@@ -101,7 +104,7 @@ if /i "!ARG:~0,11!"=="--delay-ms=" (
 )
 
 rem Support --user <USERNAME>
-if /i "%~1"=="--user" (
+if /i "!ARG!"=="--user" (
     if "%~2"=="" (
         echo [-] Missing value for --user
         pause
@@ -113,7 +116,8 @@ if /i "%~1"=="--user" (
 
 rem Support --user=<USERNAME>
 if /i "!ARG:~0,7!"=="--user=" (
-    for /f "delims=" %%V in ("!ARG:~7!") do set "OPT_USER=%%~V"
+    set "OPT_USER=!ARG:~7!"
+    if "!OPT_USER:~0,1!"=="""" if "!OPT_USER:~-1!"=="""" set "OPT_USER=!OPT_USER:~1,-1!"
     if not defined OPT_USER (
         echo [-] Missing value for --user
         pause
@@ -138,12 +142,35 @@ echo   --help, -h, /?        Show this help message
 exit /b 0
 
 :run_install
-set "CMD_ARGS="
-if defined OPT_DEVICE set "CMD_ARGS=!CMD_ARGS! --device "!OPT_DEVICE!""
-if defined OPT_DELAY set "CMD_ARGS=!CMD_ARGS! --delay-ms !OPT_DELAY!"
-if defined OPT_USER set "CMD_ARGS=!CMD_ARGS! --user "!OPT_USER!""
-
-"%EXE_PATH%" install!CMD_ARGS!
+if defined OPT_DEVICE (
+    if defined OPT_DELAY (
+        if defined OPT_USER (
+            "%EXE_PATH%" install --device "%OPT_DEVICE%" --delay-ms %OPT_DELAY% --user "%OPT_USER%"
+        ) else (
+            "%EXE_PATH%" install --device "%OPT_DEVICE%" --delay-ms %OPT_DELAY%
+        )
+    ) else (
+        if defined OPT_USER (
+            "%EXE_PATH%" install --device "%OPT_DEVICE%" --user "%OPT_USER%"
+        ) else (
+            "%EXE_PATH%" install --device "%OPT_DEVICE%"
+        )
+    )
+) else (
+    if defined OPT_DELAY (
+        if defined OPT_USER (
+            "%EXE_PATH%" install --delay-ms %OPT_DELAY% --user "%OPT_USER%"
+        ) else (
+            "%EXE_PATH%" install --delay-ms %OPT_DELAY%
+        )
+    ) else (
+        if defined OPT_USER (
+            "%EXE_PATH%" install --user "%OPT_USER%"
+        ) else (
+            "%EXE_PATH%" install
+        )
+    )
+)
 if errorlevel 1 (
     echo [-] Installation failed.
     pause

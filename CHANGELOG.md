@@ -9,7 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Hardened `install.bat` against command injection and double expansion (CWE-78 / CWE-88) by migrating to `EnableDelayedExpansion`, eliminating `call set`, stripping duplicate outer quotes, and disabling `eol` comment parsing in numeric validation.
+- Hardened `install.bat` and `uninstall.bat` against phase-1 argument injection (CWE-78 / CWE-88) by placing `setlocal EnableDelayedExpansion` at script entry prior to evaluating `%1`, eliminating argument splitting vulnerabilities.
+- Replaced delayed expansion string concatenation in `install.bat` argument dispatch with direct branch dispatch, preventing exclamation marks (`!`) in device names from being stripped.
+- Fixed numeric validation delimiter syntax in `install.bat` to `eol=a delims=0123456789`, preventing space-separated whitespace delimiter bypasses.
+- Re-initialized `entry.dwSize` before `Process32NextW` inside the Voicemeeter process enumeration loop per Win32 Toolhelp32 specifications.
+- Removed ambiguous `"micro"` shorthand from `ENDPOINT_ROLES` and implemented exact word-boundary token matching, preventing false-positive stripping of device names starting with "micro" (e.g. `Microchip Audio`, `Micronas DAC`, `Micro-Star`).
+- Removed mixed-quote rejection on `--device` in `parse_options`, allowing `format_xpath_string_literal` to safely handle mixed single and double quotes via XPath `concat()`.
+- Replaced `.to_str()` requirement on temporary XML file path with direct `&OsStr` argument passing to `schtasks.exe`, supporting arbitrary non-UTF-8 temporary directory paths.
+- Hardened `parse_task_xml_status` to evaluate both `<Settings><Enabled>` and `<EventTrigger><Enabled>` blocks, detecting trigger-level disabled status.
+- Hardened `query_task_status` to check `std::fs::metadata(&task_file)` for `io::ErrorKind::NotFound` specifically, preventing file permission or I/O errors from being misreported as uninstalled.
+- Converted MediaWiki-style links in `docs/wiki/Home.md` to standard Markdown relative links.
+- Corrected XPath attribute quotes in `docs/wiki/Task-Scheduler-Internals.md` to match the exact single-quoted implementation.
 - Preserved user-specified `--device` argument verbatim in `handle_install`, preventing `clean_device_name` from altering explicit user input and breaking Event 65 exact XPath matching.
 - Restricted `clean_device_name` parenthetical extraction to recognized audio endpoint roles (`ENDPOINT_ROLES`), preventing hardware devices with parenthetical qualifiers (e.g. `(SST)`, `(Generic)`) from being truncated.
 - Replaced fragile localized string scraping in `handle_status` with language-independent `System32\Tasks` file verification and structured `Option<TaskStatusDetails>` query results.
