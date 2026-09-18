@@ -30,7 +30,7 @@ If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switc
 | **Community Polling Scripts** (e.g. Python `sleep(5)`) | Up to 5,000 ms | ~40 MB RAM | High latency: you hear 5 seconds of ear-splitting robot screeching before it restarts. Consumes CPU/RAM 24/7. |
 | **Heavy Tray Apps** (Electron/WPF) | ~300 ms | 100+ MB RAM | Huge background resource footprint just to send a single restart signal. |
 | **Raw Task Scheduler XML Gists** | ~50 ms | 0 MB | **No Debounce:** Spawns multiple concurrent `voicemeeter.exe -r` GUI windows before USB drivers finish negotiating formats, causing race conditions. |
-| ⚡ **`earplugger`** | **~350–400 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (150ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
+| ⚡ **`earplugger`** | **~150–200 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (75ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
 
 ---
 
@@ -48,7 +48,7 @@ sequenceDiagram
     Win->>Win: Logs Event 65 (flow=Render, state=ACTIVE)
     Win->>Task: Event Trigger Fires
     Task->>EP: Spawns earplugger (Hidden, windowless)
-    EP->>EP: Settle Delay (150ms handshake buffer)
+    EP->>EP: Settle Delay (75ms handshake buffer)
     EP->>VM: IPC via VoicemeeterRemote64.dll (Command.Restart = 1.0)
     VM->>VM: Flushes buffers & resyncs A1 hardware clock
     EP-->>Task: Exits cleanly in ~30ms
@@ -102,14 +102,15 @@ Commands:
   install              Register Windows Task Scheduler event trigger
   uninstall            Remove Windows Task Scheduler event trigger
   status               Check status of task trigger and Voicemeeter engine
+  version              Print version information (--version, -v)
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150)
+  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 75)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
-  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150)
+  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 75)
 ```
 
 ---

@@ -3,7 +3,7 @@ mod voicemeeter;
 
 use std::env;
 
-const DEFAULT_DELAY_MS: u64 = 150;
+const DEFAULT_DELAY_MS: u64 = 75;
 
 fn print_banner() {
     println!(
@@ -28,14 +28,15 @@ Commands:
   install              Register Windows Task Scheduler event trigger
   uninstall            Remove Windows Task Scheduler event trigger
   status               Check status of task trigger and Voicemeeter engine
+  version              Print version information (--version, -v)
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150)
+  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 75)
 
 Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
-  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150)
+  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 75)
 
 Examples:
   earplugger restart
@@ -47,19 +48,47 @@ Examples:
     );
 }
 
-fn handle_restart(args: &[String]) {
-    let mut delay_ms = DEFAULT_DELAY_MS;
+fn parse_delay_arg(args: &[String], default: u64) -> Result<u64, String> {
+    let mut delay = default;
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--delay-ms" && i + 1 < args.len() {
-            if let Ok(d) = args[i + 1].parse::<u64>() {
-                delay_ms = d;
+        if args[i] == "--delay-ms" {
+            if i + 1 >= args.len() {
+                return Err("Missing value for --delay-ms".to_string());
             }
+            delay = args[i + 1]
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid integer value '{}' for --delay-ms", args[i + 1]))?;
             i += 2;
             continue;
         }
         i += 1;
     }
+    Ok(delay)
+}
+
+fn parse_device_arg(args: &[String]) -> Result<Option<String>, String> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--device" {
+            if i + 1 >= args.len() {
+                return Err("Missing value for --device".to_string());
+            }
+            return Ok(Some(args[i + 1].clone()));
+        }
+        i += 1;
+    }
+    Ok(None)
+}
+
+fn handle_restart(args: &[String]) {
+    let delay_ms = match parse_delay_arg(args, DEFAULT_DELAY_MS) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[earplugger] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     if !voicemeeter::is_voicemeeter_running() {
         // Silent exit if Voicemeeter isn't running (avoids background spam)
@@ -74,25 +103,21 @@ fn handle_restart(args: &[String]) {
 
 fn handle_install(args: &[String]) {
     print_banner();
-    let mut delay_ms = DEFAULT_DELAY_MS;
-    let mut device_name: Option<String> = None;
+    let delay_ms = match parse_delay_arg(args, DEFAULT_DELAY_MS) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[-] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--delay-ms" && i + 1 < args.len() {
-            if let Ok(d) = args[i + 1].parse::<u64>() {
-                delay_ms = d;
-            }
-            i += 2;
-            continue;
+    let mut device_name = match parse_device_arg(args) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[-] Error: {}", e);
+            std::process::exit(1);
         }
-        if args[i] == "--device" && i + 1 < args.len() {
-            device_name = Some(args[i + 1].clone());
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
+    };
 
     // If device not specified, try to auto-detect from active Voicemeeter A1
     if device_name.is_none() {
@@ -143,7 +168,12 @@ fn handle_install(args: &[String]) {
             );
         }
         Err(e) => {
-            eprintln!("[-] Installation failed: {}", e);
+            if e.to_lowercase().contains("access is denied") {
+                eprintln!("[-] Installation failed: Administrator privileges are required.");
+                eprintln!("    Please run 'earplugger install' from an elevated terminal (Run as Administrator).");
+            } else {
+                eprintln!("[-] Installation failed: {}", e);
+            }
             std::process::exit(1);
         }
     }
@@ -160,7 +190,12 @@ fn handle_uninstall() {
             println!("[+] Successfully removed Task Scheduler event trigger.");
         }
         Err(e) => {
-            eprintln!("[-] Uninstall failed or task was not found: {}", e);
+            if e.to_lowercase().contains("access is denied") {
+                eprintln!("[-] Uninstall failed: Administrator privileges are required.");
+                eprintln!("    Please run 'earplugger uninstall' from an elevated terminal (Run as Administrator).");
+            } else {
+                eprintln!("[-] Uninstall failed or task was not found: {}", e);
+            }
         }
     }
 }
@@ -217,6 +252,9 @@ fn main() {
         "install" => handle_install(&args[1..]),
         "uninstall" => handle_uninstall(),
         "status" => handle_status(),
+        "version" | "--version" | "-v" => {
+            println!("earplugger {}", env!("CARGO_PKG_VERSION"));
+        }
         "help" | "--help" | "-h" => print_help(),
         other => {
             eprintln!(
@@ -225,5 +263,37 @@ fn main() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_delay_arg_default() {
+        let args: Vec<String> = vec![];
+        let delay = parse_delay_arg(&args, 75).unwrap();
+        assert_eq!(delay, 75);
+    }
+
+    #[test]
+    fn test_parse_delay_arg_custom() {
+        let args = vec!["--delay-ms".to_string(), "120".to_string()];
+        let delay = parse_delay_arg(&args, 75).unwrap();
+        assert_eq!(delay, 120);
+    }
+
+    #[test]
+    fn test_parse_delay_arg_invalid() {
+        let args = vec!["--delay-ms".to_string(), "invalid".to_string()];
+        assert!(parse_delay_arg(&args, 75).is_err());
+    }
+
+    #[test]
+    fn test_parse_device_arg() {
+        let args = vec!["--device".to_string(), "RODE NT-USB".to_string()];
+        let dev = parse_device_arg(&args).unwrap();
+        assert_eq!(dev, Some("RODE NT-USB".to_string()));
     }
 }

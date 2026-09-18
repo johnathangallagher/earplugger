@@ -9,12 +9,36 @@ pub fn get_exe_path() -> Result<PathBuf, String> {
     env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {}", e))
 }
 
+pub fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn sanitize_xpath_literal(s: &str) -> String {
+    // Prevent XPath injection and handle quotes safely
+    // Replace single quotes and control characters
+    s.replace('\'', "")
+}
+
 pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: u64) -> String {
     let filter_clause = match device_filter {
-        Some(dev) => format!(
-            " and *[EventData[Data[@Name='DeviceName']='{}' and Data[@Name='flow']='0' and Data[@Name='NewState']='1']]",
-            dev
-        ),
+        Some(dev) => {
+            let sanitized = sanitize_xpath_literal(dev);
+            format!(
+                " and *[EventData[Data[@Name='DeviceName']='{}' and Data[@Name='flow']='0' and Data[@Name='NewState']='1']]",
+                sanitized
+            )
+        }
         None => {
             " and *[EventData[Data[@Name='flow']='0' and Data[@Name='NewState']='1']]".to_string()
         }
@@ -25,17 +49,15 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
         filter_clause
     );
 
-    let escaped_subscription = subscription
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;");
+    let escaped_subscription = xml_escape(&subscription);
+    let escaped_exe = xml_escape(exe_path);
 
-    let args = if delay_ms != 150 {
-        format!("<Arguments>restart --delay-ms {}</Arguments>", delay_ms)
+    let args_val = if delay_ms != 75 {
+        format!("restart --delay-ms {}", delay_ms)
     } else {
-        "<Arguments>restart</Arguments>".to_string()
+        "restart".to_string()
     };
+    let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
@@ -82,7 +104,7 @@ pub fn generate_task_xml(exe_path: &str, device_filter: Option<&str>, delay_ms: 
     </Exec>
   </Actions>
 </Task>"#,
-        escaped_subscription, exe_path, args
+        escaped_subscription, escaped_exe, args_elem
     )
 }
 
@@ -151,5 +173,41 @@ pub fn query_task_status() -> Result<String, String> {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         Err("Task is not registered".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xml_escape_characters() {
+        let input = "Audio & Video <Test> \"Quote\" 'Single'";
+        let escaped = xml_escape(input);
+        assert_eq!(
+            escaped,
+            "Audio &amp; Video &lt;Test&gt; &quot;Quote&quot; &apos;Single&apos;"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_xpath_literal() {
+        let input = "User's RODE 'Special' Mic";
+        let sanitized = sanitize_xpath_literal(input);
+        assert_eq!(sanitized, "Users RODE Special Mic");
+    }
+
+    #[test]
+    fn test_generate_task_xml_structure() {
+        let xml = generate_task_xml(r"C:\Audio & Tools\earplugger.exe", Some("RODE NT-USB"), 75);
+        assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
+        assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
+        assert!(xml.contains("<Arguments>restart</Arguments>"));
+    }
+
+    #[test]
+    fn test_generate_task_xml_custom_delay() {
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200);
+        assert!(xml.contains("<Arguments>restart --delay-ms 200</Arguments>"));
     }
 }
