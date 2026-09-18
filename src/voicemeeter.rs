@@ -96,8 +96,14 @@ fn parse_uninstall_string_dir(raw: &str) -> Option<PathBuf> {
         } else {
             trimmed.trim_matches('"')
         }
-    } else if let Some(exe_idx) = trimmed.to_lowercase().find(".exe") {
-        &trimmed[..exe_idx + 4]
+    } else if let Some(exe_end) = trimmed
+        // Use ASCII-safe case-insensitive search to avoid to_lowercase() byte-length mismatch
+        // on non-ASCII path characters (e.g. Ä, İ) which could cause incorrect slice indices.
+        .as_bytes()
+        .windows(4)
+        .position(|w| w.eq_ignore_ascii_case(b".exe"))
+    {
+        &trimmed[..exe_end + 4]
     } else if let Some(space_idx) = trimmed.find(' ') {
         &trimmed[..space_idx]
     } else {
@@ -155,10 +161,14 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                         )
                     };
 
-                    // Handle ERROR_MORE_DATA (234) dynamically if the registry path exceeds initial buffer
+                    // Handle ERROR_MORE_DATA (234) dynamically if the registry path exceeds initial buffer.
+                    // data_len must be reset to the new buffer capacity before the retry — RegQueryValueExW
+                    // uses it as an in/out parameter.
                     if query_res == 234 && data_len > 0 {
                         let required_u16s = (data_len as usize).div_ceil(2);
                         buf.resize(required_u16s, 0);
+                        // Reset data_len to the actual new buffer capacity in bytes before retry.
+                        data_len = (buf.len() * std::mem::size_of::<u16>()) as u32;
                         query_res = unsafe {
                             RegQueryValueExW(
                                 hkey,
@@ -173,7 +183,10 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
 
                     // Check success, valid string types (REG_SZ = 1, REG_EXPAND_SZ = 2), and non-empty length
                     if query_res == 0 && (val_type == 1 || val_type == 2) && data_len >= 2 {
-                        let char_count = (data_len as usize) / 2;
+                        // data_len from RegQueryValueExW is the byte count including the NUL terminator.
+                        // Clamp char_count to buf.len() to guard against a TOCTOU where the registry value
+                        // grows between the first (ERROR_MORE_DATA) and second calls.
+                        let char_count = ((data_len as usize) / 2).min(buf.len());
                         let u16_slice = &buf[..char_count];
                         let len = u16_slice
                             .iter()
@@ -182,22 +195,31 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
 
                         // If REG_EXPAND_SZ (2), expand environment variables like %ProgramFiles%
                         let resolved_str = if val_type == 2 {
+                            // Build an explicit null-terminated copy of just the logical string to
+                            // pass to ExpandEnvironmentStringsW. Passing the raw buf pointer would
+                            // rely on zero-initialization past the string end; this is explicit.
+                            let mut input: Vec<u16> = buf[..len].to_vec();
+                            input.push(0);
+
                             let mut exp_buf = vec![0u16; 1024];
                             let exp_len = unsafe {
                                 ExpandEnvironmentStringsW(
-                                    buf.as_ptr(),
+                                    input.as_ptr(),
                                     exp_buf.as_mut_ptr(),
                                     exp_buf.len() as u32,
                                 )
                             };
+                            // exp_len includes the NUL terminator. A return of 0 means API failure.
+                            // A return > exp_buf.len() means output was truncated.
                             if exp_len > 0 && (exp_len as usize) <= exp_buf.len() {
-                                let exp_slice = &exp_buf[..exp_len as usize];
-                                let exp_end = exp_slice
+                                // exp_len includes the NUL; find it explicitly rather than trusting the count.
+                                let exp_end = exp_buf[..exp_len as usize]
                                     .iter()
                                     .position(|&c| c == 0)
-                                    .unwrap_or(exp_slice.len());
-                                String::from_utf16_lossy(&exp_slice[..exp_end])
+                                    .unwrap_or(exp_len as usize - 1);
+                                String::from_utf16_lossy(&exp_buf[..exp_end])
                             } else {
+                                // Expansion failed or truncated — fall back to the unexpanded string.
                                 String::from_utf16_lossy(&u16_slice[..len])
                             }
                         } else {
@@ -276,8 +298,15 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
     search_paths.into_iter().find(|p| p.exists())
 }
 
+// eq_ignore_ascii_case_wide_str compares a NUL-excluded wide string slice against an ASCII &str.
+// PRECONDITION: `ascii` must be pure ASCII (all bytes 0x00–0x7F). The function is documented as
+// ASCII-only: Voicemeeter process names are all ASCII, so this holds for all callers.
 #[inline]
 pub fn eq_ignore_ascii_case_wide_str(wide: &[u16], ascii: &str) -> bool {
+    debug_assert!(
+        ascii.is_ascii(),
+        "eq_ignore_ascii_case_wide_str: ascii argument must be pure ASCII"
+    );
     if wide.len() != ascii.len() {
         return false;
     }
@@ -342,7 +371,6 @@ pub fn is_voicemeeter_running() -> bool {
                     }
                 }
 
-                entry.dwSize = std::mem::size_of::<ProcessEntry32W>() as u32;
                 if Process32NextW(snapshot, &mut entry) == 0 {
                     break;
                 }
@@ -355,7 +383,6 @@ pub fn is_voicemeeter_running() -> bool {
 pub struct VoicemeeterClient {
     h_module: *mut c_void,
     logged_in: bool,
-    _login_fn: LoginFn,
     logout_fn: LogoutFn,
     set_param_fn: SetParamFn,
     get_param_str_fn: GetParamStringWFn,
@@ -406,25 +433,37 @@ impl VoicemeeterClient {
             return Err("Failed to resolve Voicemeeter API entry points".to_string());
         }
 
-        let login: LoginFn = unsafe { std::mem::transmute(login_ptr) };
-        let logout: LogoutFn = unsafe { std::mem::transmute(logout_ptr) };
-        let set_param: SetParamFn = unsafe { std::mem::transmute(set_param_ptr) };
-        let get_param_str: GetParamStringWFn = unsafe { std::mem::transmute(get_param_str_ptr) };
+        // Transmute via Option<fn> — the canonical Rust pattern for converting a data pointer
+        // (returned by GetProcAddress) to a function pointer without UB. The null check above
+        // guarantees the unwrap() cannot panic.
+        let login: LoginFn =
+            unsafe { std::mem::transmute::<*mut c_void, Option<LoginFn>>(login_ptr) }
+                .expect("login_ptr null despite null check");
+        let logout: LogoutFn =
+            unsafe { std::mem::transmute::<*mut c_void, Option<LogoutFn>>(logout_ptr) }
+                .expect("logout_ptr null despite null check");
+        let set_param: SetParamFn =
+            unsafe { std::mem::transmute::<*mut c_void, Option<SetParamFn>>(set_param_ptr) }
+                .expect("set_param_ptr null despite null check");
+        let get_param_str: GetParamStringWFn = unsafe {
+            std::mem::transmute::<*mut c_void, Option<GetParamStringWFn>>(get_param_str_ptr)
+        }
+        .expect("get_param_str_ptr null despite null check");
         let is_dirty: Option<IsDirtyFn> = if !is_dirty_ptr.is_null() {
-            Some(unsafe { std::mem::transmute::<*mut c_void, IsDirtyFn>(is_dirty_ptr) })
+            unsafe { std::mem::transmute::<*mut c_void, Option<IsDirtyFn>>(is_dirty_ptr) }
         } else {
             None
         };
 
         let res = unsafe { login() };
         if res != 0 {
-            if res == 1 {
-                // Call VBVMR_Logout to tear down initialized communication primitives before unmapping DLL
-                unsafe {
-                    logout();
-                }
-            }
+            // Call VBVMR_Logout for all non-success return codes to tear down any partially
+            // initialized communication primitives. VBVMR_Login docs confirm codes 0 and 1 both
+            // succeed in initializing the client; negative codes (-1, -2) may or may not initialize
+            // state depending on the SDK version. Calling logout unconditionally on failure is safe
+            // per the VB-Audio SDK: logout is a no-op if login never initialized state.
             unsafe {
+                logout();
                 FreeLibrary(h_module);
             }
             return Err(if res == 1 {
@@ -437,7 +476,6 @@ impl VoicemeeterClient {
         Ok(Self {
             h_module,
             logged_in: true,
-            _login_fn: login,
             logout_fn: logout,
             set_param_fn: set_param,
             get_param_str_fn: get_param_str,
@@ -497,10 +535,14 @@ pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
     let client = VoicemeeterClient::connect()?;
     client.set_parameter_float(c"Command.Restart", 1.0)?;
 
-    // Poll parameters dirty status with bounded sleep (150ms total) so Voicemeeter consumes Command.Restart
+    // Poll the dirty flag until Voicemeeter's message loop has consumed Command.Restart
+    // (dirty returns 0) or until the bounded timeout expires (10 × 15ms = 150ms).
+    // Breaking early on dirty==0 avoids holding the DLL loaded longer than necessary.
     for _ in 0..10 {
         sleep(Duration::from_millis(15));
-        let _ = client.is_parameters_dirty();
+        if client.is_parameters_dirty() == 0 {
+            break;
+        }
     }
     Ok(())
 }

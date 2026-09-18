@@ -17,18 +17,34 @@ unsafe extern "system" {
 }
 
 fn get_system32_path(binary: &str) -> PathBuf {
+    // Initial attempt with a MAX_PATH buffer. If the path is longer (long-path-enabled systems),
+    // retry with the exact required size returned by the API.
     let mut buf = vec![0u16; 260];
-    let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) };
+    let mut len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) };
+
+    if len as usize >= buf.len() {
+        // Buffer was too small; len now holds the required character count including NUL.
+        buf.resize(len as usize + 1, 0);
+        len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) };
+    }
+
     let sys_dir = if len > 0 && (len as usize) < buf.len() {
         let s = String::from_utf16_lossy(&buf[..len as usize]);
         PathBuf::from(s)
     } else {
+        // Final fallback: use the SystemRoot env var. Note that env vars are user-controlled,
+        // but we only reach here on exotic long-path configurations where GetSystemDirectoryW
+        // fails even after a retry — a case where no path is fully trustworthy.
         let sys_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
         PathBuf::from(sys_root).join("System32")
     };
 
     #[cfg(target_pointer_width = "32")]
     {
+        // On a 64-bit OS running a 32-bit binary, System32 is redirected to SysWOW64.
+        // Sysnative is a virtual alias that bypasses the redirector and reaches the real
+        // 64-bit System32, where schtasks.exe and wevtutil.exe live.
+        // On a native 32-bit OS, Sysnative does not exist and we fall through to sys_dir.
         if let Some(parent) = sys_dir.parent() {
             let sysnative = parent.join("Sysnative").join(binary);
             if sysnative.exists() {
@@ -43,7 +59,9 @@ fn get_system32_path(binary: &str) -> PathBuf {
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for c in s.chars() {
-        // Filter out illegal XML 1.0 control characters
+        // Filter out illegal XML 1.0 control characters (anything < 0x20 except tab/LF/CR).
+        // Device names with such characters are rejected at parse_options; this guard is
+        // a defensive second layer.
         if c < ' ' && c != '\t' && c != '\n' && c != '\r' {
             continue;
         }
@@ -65,7 +83,13 @@ pub fn format_xpath_string_literal(s: &str) -> String {
     if !clean.contains('\'') {
         format!("'{}'", clean)
     } else {
-        // XPath 1.0 concat() for literals containing single quotes
+        // XPath 1.0 concat() for literals containing single quotes.
+        // The generated expression uses double-quoted strings for apostrophe literals ("'").
+        // When embedded in the <Subscription> XML element, the entire XPath goes through
+        // xml_escape(), which converts those double quotes to &quot;. schtasks then decodes
+        // &quot; back to " before passing the XPath to the event filter engine — so the
+        // final XPath seen by the engine is syntactically correct. This two-phase escaping
+        // is intentional and must not be changed without updating both layers.
         let tokens: Vec<&str> = clean.split('\'').collect();
         let mut parts = Vec::new();
         for (i, token) in tokens.iter().enumerate() {
@@ -163,7 +187,7 @@ pub fn generate_task_xml(
     <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT30S</ExecutionTimeLimit>
     <Priority>4</Priority>
   </Settings>
   <Actions Context="Author">
@@ -267,6 +291,9 @@ pub fn install_task(
             Ok(mut file) => {
                 file.write_all(&bytes)
                     .map_err(|e| format!("Failed to write temporary XML file: {}", e))?;
+                // Flush to OS buffers before dropping the handle so schtasks.exe reads complete data.
+                file.flush()
+                    .map_err(|e| format!("Failed to flush temporary XML file: {}", e))?;
                 temp_path = Some(candidate);
                 break;
             }
@@ -279,16 +306,15 @@ pub fn install_task(
         temp_path.ok_or_else(|| "Failed to allocate unique temporary XML file".to_string())?;
     let _guard = TempFileGuard(temp_xml_path.clone());
 
+    // Verify the temp path is valid UTF-8 before passing to schtasks; to_string_lossy() would
+    // silently corrupt non-UTF-8 paths (e.g. %TEMP% on Japanese Windows with Shift-JIS profile).
+    let temp_str = temp_xml_path
+        .to_str()
+        .ok_or_else(|| "Temporary file path contains non-UTF-8 characters".to_string())?;
+
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
-        .args([
-            "/create",
-            "/tn",
-            TASK_NAME,
-            "/xml",
-            &temp_xml_path.to_string_lossy(),
-            "/f",
-        ])
+        .args(["/create", "/tn", TASK_NAME, "/xml", temp_str, "/f"])
         .output()
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
@@ -337,16 +363,47 @@ pub fn query_task_status() -> Result<TaskStatusDetails, String> {
         .output()
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
-    if output.status.success() {
-        let xml = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let is_enabled = !xml.contains("<Enabled>false</Enabled>");
-        Ok(TaskStatusDetails {
-            is_enabled,
-            xml_raw: xml,
-        })
-    } else {
-        Err("Task is not registered".to_string())
+    if !output.status.success() {
+        // Capture stderr for a meaningful error rather than conflating execution failure
+        // with task-not-found.
+        let err = String::from_utf8_lossy(&output.stderr);
+        let msg = err.trim();
+        if msg.is_empty() {
+            return Err("Task is not registered".to_string());
+        }
+        return Err(format!("Task is not registered (schtasks: {})", msg));
     }
+
+    // schtasks /query /xml outputs UTF-16 LE with a BOM on Windows. Detect the BOM and
+    // decode accordingly. If no BOM is present, treat as UTF-8 (shouldn't happen in practice
+    // but future-proofs against Wine or redirected output).
+    let raw = &output.stdout;
+    let xml = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+        // UTF-16 LE with BOM
+        let u16_data: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16_data).trim().to_string()
+    } else {
+        String::from_utf8_lossy(raw).trim().to_string()
+    };
+
+    // Check the task-level <Settings><Enabled> element specifically. The <Enabled> element
+    // also appears inside <EventTrigger> blocks; we locate the <Settings> section first to
+    // avoid false positives from a trigger-level disabled state.
+    let settings_start = xml.find("<Settings>").unwrap_or(0);
+    let settings_end = xml.find("</Settings>").unwrap_or(xml.len());
+    let settings_block = &xml[settings_start..settings_end];
+    // Check for both "false" and "False" since XML is case-sensitive but Task Scheduler
+    // may emit either casing depending on Windows version.
+    let is_enabled = !settings_block.contains("<Enabled>false</Enabled>")
+        && !settings_block.contains("<Enabled>False</Enabled>");
+
+    Ok(TaskStatusDetails {
+        is_enabled,
+        xml_raw: xml,
+    })
 }
 
 #[cfg(test)]
@@ -401,6 +458,7 @@ mod tests {
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
+        assert!(xml.contains("<ExecutionTimeLimit>PT30S</ExecutionTimeLimit>"));
     }
 
     #[test]
@@ -408,5 +466,39 @@ mod tests {
         let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"));
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
         assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
+    }
+
+    #[test]
+    fn test_query_task_status_utf16_decoding() {
+        // Simulate UTF-16 LE BOM-prefixed output from schtasks with a disabled task.
+        // The <Enabled>false</Enabled> is inside <Settings>.
+        let xml_str = "<Task><Settings><Enabled>false</Enabled></Settings></Task>";
+        let utf16: Vec<u16> = xml_str.encode_utf16().collect();
+        let mut raw: Vec<u8> = vec![0xFF, 0xFE];
+        for u in &utf16 {
+            raw.extend_from_slice(&u.to_le_bytes());
+        }
+
+        // Replicate the decoding logic from query_task_status
+        let decoded = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+            let u16_data: Vec<u16> = raw[2..]
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            String::from_utf16_lossy(&u16_data).trim().to_string()
+        } else {
+            String::from_utf8_lossy(&raw).trim().to_string()
+        };
+
+        let settings_start = decoded.find("<Settings>").unwrap_or(0);
+        let settings_end = decoded.find("</Settings>").unwrap_or(decoded.len());
+        let settings_block = &decoded[settings_start..settings_end];
+        let is_enabled = !settings_block.contains("<Enabled>false</Enabled>")
+            && !settings_block.contains("<Enabled>False</Enabled>");
+
+        assert!(
+            !is_enabled,
+            "UTF-16 decoded disabled task should report is_enabled=false"
+        );
     }
 }

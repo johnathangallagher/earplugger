@@ -27,7 +27,30 @@ if exist "%~dp0earplugger.exe" (
 )
 
 echo [*] Installing Task Scheduler trigger...
-"%EXE_PATH%" install %*
+rem Pass only the known-safe flags accepted by 'earplugger install'.
+rem Using %* directly from cmd.exe would allow shell metacharacters (& | > <)
+rem in arguments to be interpreted by cmd before reaching earplugger.
+set "EXTRA_ARGS="
+:parse_args
+if "%~1"=="" goto run_install
+if /i "%~1"=="--device" (
+    set "EXTRA_ARGS=%EXTRA_ARGS% --device %~2"
+    shift & shift & goto parse_args
+)
+if /i "%~1"=="--delay-ms" (
+    set "EXTRA_ARGS=%EXTRA_ARGS% --delay-ms %~2"
+    shift & shift & goto parse_args
+)
+if /i "%~1"=="--user" (
+    set "EXTRA_ARGS=%EXTRA_ARGS% --user %~2"
+    shift & shift & goto parse_args
+)
+echo [-] Unknown argument: %~1
+echo     Accepted: --device NAME, --delay-ms MS, --user USERNAME
+exit /b 1
+
+:run_install
+"%EXE_PATH%" install%EXTRA_ARGS%
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Installation failed with exit code %ERRORLEVEL%.
     pause

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-18
+
+### Fixed
+
+- Fixed `query_task_status` to properly decode `schtasks /query /xml` UTF-16 LE output (BOM-detected). Previously the raw bytes were decoded as UTF-8 via `from_utf8_lossy`, producing garbage; the `is_enabled` field was always `true` regardless of actual task state.
+- Fixed `<Enabled>` check in `query_task_status` to inspect only the `<Settings>` block, avoiding false positives from trigger-level `<Enabled>false</Enabled>` elements.
+- Fixed `data_len` not being reset before the retry `RegQueryValueExW` call after `ERROR_MORE_DATA` (234). Previously the stale `data_len` from the first call was passed as the buffer capacity, which could cause the API to write beyond the resized buffer.
+- Fixed `char_count` computation in registry read to clamp to `buf.len()`, preventing a potential panic if the registry value grows between the first and second calls (TOCTOU).
+- Fixed `ExpandEnvironmentStringsW` to receive an explicit null-terminated copy of the logical string (`buf[..len]` + `\0`), not the raw full registry buffer. Previously the API read past the logical string end, relying on implicit zero-initialization.
+- Fixed `ExpandEnvironmentStringsW` result handling to find the NUL explicitly in the output slice rather than trusting `exp_len - 1`; a buffer that exactly fills without a NUL would have included the terminator character in the decoded Rust `String`.
+- Fixed `VBVMR_Login` error handling to call `VBVMR_Logout` unconditionally for all non-zero return codes, not only code `1`. Negative codes may partially initialize internal communication state; unconditional logout on failure is safe per VB-Audio SDK semantics.
+- Fixed `parse_uninstall_string_dir` to use `as_bytes().windows(4).position(|w| w.eq_ignore_ascii_case(b".exe"))` for the `.exe` search, eliminating the `to_lowercase()` index reuse which is a latent panic vector for non-ASCII path characters.
+- Fixed `clean_device_name` to use `rfind(" (")` instead of `find(" (")` for outermost parenthetical extraction. The previous `find` produced corrupted output for endpoint role names containing their own parenthetical groups (e.g. `"Kopfhörer (Dynamisch) (RODE NT-USB)"`).
+- Fixed `clean_device_name` driver prefix detection to use an explicit allowlist (`WDM`, `MME`, `KS`, `ASIO`, `DirectSound`) instead of the prior `is_alphanumeric || '_'` heuristic, which incorrectly stripped prefixes like `"Focusrite"` or `"USB_Audio"`.
+- Fixed `restart_audio_engine` dirty poll loop to break early when `is_parameters_dirty()` returns `0` (parameter consumed), rather than always sleeping the full 150ms.
+- Fixed `get_system32_path` to retry `GetSystemDirectoryW` with the required buffer size when the initial 260-character buffer is too small, rather than silently falling back to `%SystemRoot%`.
+- Fixed temp file path to use `.to_str()` with an explicit error return rather than `.to_string_lossy()`, preventing silent path corruption on Windows with non-UTF-8 `%TEMP%` paths (e.g. East Asian locale user profiles).
+- Fixed non-silent `restart` mode to exit 0 when Voicemeeter closes during the settle delay, matching silent mode behavior. Previously this returned exit code 1, causing Task Scheduler to log spurious failures.
+- Fixed `install.bat` argument passthrough to use an explicit allowlist parser instead of raw `%*`, eliminating a cmd.exe metacharacter injection vector.
+- Reduced `<ExecutionTimeLimit>` from `PT1M` to `PT30S` in the Task Scheduler XML definition. The `IgnoreNew` policy suppresses re-triggering while a prior instance runs; a 30-second limit narrows the dead zone for rapid successive KVM switches.
+- Annotated `eq_ignore_ascii_case_wide_str` with a `debug_assert` enforcing the ASCII-only precondition on the `ascii` argument.
+- Refactored `std::mem::transmute` calls for `GetProcAddress` results to use `Option<fn>` intermediate type, the canonical Rust pattern for converting data pointers to function pointers.
+- Removed the redundant `_login_fn` field from `VoicemeeterClient`; the login function pointer is not needed after the constructor returns.
+- Added `cargo audit` as a parallel job in `.github/workflows/security.yml` to catch known CVE advisories in dependencies independent of CodeQL Rust beta coverage.
+
 ## [1.2.0] - 2026-09-18
 
 ### Security

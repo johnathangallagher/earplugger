@@ -105,13 +105,19 @@ Examples:
     );
 }
 
+// Known Voicemeeter driver type prefixes. Using an explicit allowlist prevents device names
+// that happen to contain ": " (e.g. "Focusrite: Line In") from being incorrectly stripped.
+const DRIVER_PREFIXES: &[&str] = &["WDM", "MME", "KS", "ASIO", "DirectSound"];
+
 pub fn clean_device_name(raw: &str) -> String {
     let mut s = raw.trim();
 
-    // Strip driver type prefix if present (e.g. "WDM: ", "MME: ", "KS: ", "ASIO: ", "DirectSound: ")
+    // Strip driver type prefix if present (e.g. "WDM: ", "MME: ", "KS: ", "ASIO: ", "DirectSound: ").
+    // Only strip prefixes that exactly match known Voicemeeter driver type names to avoid false
+    // positives on device names like "Focusrite: Line In" or "USB_Audio: Output".
     if let Some(colon_idx) = s.find(": ") {
         let prefix = &s[..colon_idx];
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        if DRIVER_PREFIXES.contains(&prefix) {
             s = s[colon_idx + 2..].trim();
         }
     }
@@ -119,10 +125,11 @@ pub fn clean_device_name(raw: &str) -> String {
     // Windows endpoint friendly names across all languages are formatted as:
     // "<Endpoint Role> (<Hardware Description>)"
     // e.g., "Speakers (Realtek(R) Audio)", "Lautsprecher (RODE NT-USB)", "Altavoces (USB Audio)"
-    // The hardware description is enclosed in the outermost parenthetical group ending at the end of the string.
+    // Use rfind to locate the LAST " (" so that endpoint role names containing parentheses
+    // (e.g. "Kopfhörer (Dynamisch) (RODE NT-USB)") correctly extract the outermost suffix group.
     if s.ends_with(')') {
-        if let Some(first_paren) = s.find(" (") {
-            let inner = s[first_paren + 2..s.len() - 1].trim();
+        if let Some(last_paren) = s.rfind(" (") {
+            let inner = s[last_paren + 2..s.len() - 1].trim();
             if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
                 s = inner;
             }
@@ -142,6 +149,7 @@ pub fn clean_device_name(raw: &str) -> String {
 
 pub struct ParsedArgs {
     pub delay_ms: u64,
+    pub delay_ms_set: bool,
     pub device: Option<String>,
     pub user: Option<String>,
     pub silent: bool,
@@ -151,6 +159,7 @@ pub struct ParsedArgs {
 
 pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut delay_ms = DEFAULT_DELAY_MS;
+    let mut delay_ms_set = false;
     let mut device: Option<String> = None;
     let mut user: Option<String> = None;
     let mut silent = false;
@@ -184,6 +193,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
                 ));
             }
             delay_ms = val;
+            delay_ms_set = true;
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--delay-ms=") {
             let val = val_str
@@ -196,6 +206,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
                 ));
             }
             delay_ms = val;
+            delay_ms_set = true;
             i += 1;
         } else if arg == "--device" {
             if i + 1 >= args.len() {
@@ -238,6 +249,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
 
     Ok(ParsedArgs {
         delay_ms,
+        delay_ms_set,
         device,
         user,
         silent,
@@ -283,17 +295,21 @@ fn handle_restart(args: &[String]) {
     }
 
     if let Err(e) = voicemeeter::restart_audio_engine(0) {
+        // "Voicemeeter is not running" after the settle delay is a normal race condition:
+        // the user may have closed Voicemeeter between the USB reconnect and the task firing.
+        // Exit 0 in both silent and non-silent modes so Task Scheduler does not log a failure.
+        if e.contains("not running") {
+            if !opts.silent {
+                eprintln!(
+                    "[earplugger] Note: Voicemeeter closed during settle delay — skipping restart."
+                );
+            }
+            std::process::exit(0);
+        }
         if !opts.silent {
             eprintln!("[earplugger] Error: {}", e);
-            std::process::exit(1);
-        } else {
-            // In silent mode, exit cleanly if Voicemeeter was closed during the delay window
-            if e.contains("not running") {
-                std::process::exit(0);
-            } else {
-                std::process::exit(1);
-            }
         }
+        std::process::exit(1);
     } else if !opts.silent {
         println!("[earplugger] Successfully triggered Voicemeeter audio engine restart.");
     }
@@ -394,11 +410,7 @@ fn handle_uninstall(args: &[String]) {
         return;
     }
 
-    if opts.device.is_some()
-        || opts.user.is_some()
-        || opts.silent
-        || opts.delay_ms != DEFAULT_DELAY_MS
-    {
+    if opts.device.is_some() || opts.user.is_some() || opts.silent || opts.delay_ms_set {
         eprintln!(
             "[-] Error: Invalid options for 'uninstall'. Only --disable-channel is accepted."
         );
@@ -458,7 +470,7 @@ fn handle_status(args: &[String]) {
         || opts.user.is_some()
         || opts.silent
         || opts.disable_channel
-        || opts.delay_ms != DEFAULT_DELAY_MS
+        || opts.delay_ms_set
     {
         eprintln!("[-] Error: 'status' takes no extra options.");
         std::process::exit(1);
@@ -660,6 +672,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_options_delay_ms_set_flag() {
+        let no_delay = parse_options(&[]).unwrap();
+        assert!(!no_delay.delay_ms_set);
+
+        let with_delay = parse_options(&["--delay-ms=0".to_string()]).unwrap();
+        assert!(with_delay.delay_ms_set);
+        assert_eq!(with_delay.delay_ms, 0);
+    }
+
+    #[test]
     fn test_parse_options_device_empty_errors() {
         let args_space = vec!["--device".to_string(), "".to_string()];
         assert!(parse_options(&args_space).is_err());
@@ -678,5 +700,31 @@ mod tests {
         let opts = parse_options(&args).unwrap();
         assert_eq!(opts.user, Some("WORKGROUP\\User1".to_string()));
         assert!(opts.disable_channel);
+    }
+
+    #[test]
+    fn test_clean_device_name_rfind_multilingual_paren_in_role() {
+        // rfind ensures the last " (" is used for extraction, not the first.
+        // "Kopfhörer (Dynamisch) (RODE NT-USB)" — role name contains parens.
+        assert_eq!(
+            clean_device_name("WDM: Kopfhörer (Dynamisch) (RODE NT-USB)"),
+            "RODE NT-USB"
+        );
+        // Endpoint role with multiple inner parenthetical groups.
+        assert_eq!(
+            clean_device_name("WDM: Écouteurs (HD) (USB Audio CODEC)"),
+            "USB Audio CODEC"
+        );
+    }
+
+    #[test]
+    fn test_clean_device_name_non_driver_prefix_not_stripped() {
+        // "Focusrite" is not in the known DRIVER_PREFIXES allowlist, so ": " is not stripped.
+        assert_eq!(
+            clean_device_name("Focusrite: Scarlett 2i2 USB"),
+            "Focusrite: Scarlett 2i2 USB"
+        );
+        // Underscore-containing prefix should not be stripped either.
+        assert_eq!(clean_device_name("USB_Audio: Output"), "USB_Audio: Output");
     }
 }
