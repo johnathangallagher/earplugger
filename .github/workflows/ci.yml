@@ -39,12 +39,17 @@ jobs:
   msrv:
     name: Verify MSRV (1.85.0)
     runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - name: Set up MSRV Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.85.0"
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
       - name: Check against MSRV
-        run: cargo check --target x86_64-pc-windows-msvc --all-targets
+        run: cargo check --target ${{ matrix.target }} --all-targets

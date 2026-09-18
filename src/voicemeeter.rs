@@ -98,18 +98,39 @@ fn parse_uninstall_string_dir(raw: &str) -> Option<PathBuf> {
         } else {
             trimmed.trim_matches('"')
         }
-    } else if let Some(exe_end) = trimmed
-        // Use ASCII-safe case-insensitive reverse search to match the actual executable extension,
-        // preventing truncation if an intermediate directory name contains '.exe' (e.g. C:\Tools.exe\uninstall.exe).
-        .as_bytes()
-        .windows(4)
-        .rposition(|w| w.eq_ignore_ascii_case(b".exe"))
-    {
-        &trimmed[..exe_end + 4]
-    } else if let Some(space_idx) = trimmed.find(' ') {
-        &trimmed[..space_idx]
     } else {
-        trimmed
+        // For unquoted strings, scan for candidate .exe substrings.
+        // A valid executable ends at '.exe' followed by whitespace or end-of-string.
+        let bytes = trimmed.as_bytes();
+        let mut best = None;
+        let mut pos = 0;
+        while pos + 4 <= bytes.len() {
+            if bytes[pos..pos + 4].eq_ignore_ascii_case(b".exe") {
+                let candidate_end = pos + 4;
+                let is_end = candidate_end == bytes.len()
+                    || bytes[candidate_end] == b' '
+                    || bytes[candidate_end] == b'\t';
+                if is_end {
+                    let candidate = &trimmed[..candidate_end];
+                    if Path::new(candidate).is_file() {
+                        best = Some(candidate);
+                        break;
+                    }
+                    if best.is_none() {
+                        best = Some(candidate);
+                    }
+                }
+            }
+            pos += 1;
+        }
+
+        if let Some(candidate) = best {
+            candidate
+        } else if let Some(space_idx) = trimmed.find(' ') {
+            &trimmed[..space_idx]
+        } else {
+            trimmed
+        }
     };
 
     let exe_path = PathBuf::from(exe_str);
@@ -327,11 +348,7 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
 // ASCII-only: Voicemeeter process names are all ASCII, so this holds for all callers.
 #[inline]
 pub fn eq_ignore_ascii_case_wide_str(wide: &[u16], ascii: &str) -> bool {
-    debug_assert!(
-        ascii.is_ascii(),
-        "eq_ignore_ascii_case_wide_str: ascii argument must be pure ASCII"
-    );
-    if wide.len() != ascii.len() {
+    if !ascii.is_ascii() || wide.len() != ascii.len() {
         return false;
     }
     wide.iter().zip(ascii.bytes()).all(|(&w, b)| {
@@ -672,5 +689,20 @@ mod tests {
             parse_uninstall_string_dir(intermediate_exe),
             Some(PathBuf::from(r"C:\Tools.exe.dir\Voicemeeter"))
         );
+
+        // Path with unquoted argument containing '.exe'
+        let exe_in_arg = r#"C:\Program Files\VB\Voicemeeter\unins000.exe /helper=tool.exe -silent"#;
+        assert_eq!(
+            parse_uninstall_string_dir(exe_in_arg),
+            Some(PathBuf::from(r"C:\Program Files\VB\Voicemeeter"))
+        );
+    }
+
+    #[test]
+    fn test_eq_ignore_ascii_case_wide_str_non_ascii() {
+        let wide = [0x0061, 0x0062, 0x0063]; // "abc"
+        assert!(eq_ignore_ascii_case_wide_str(&wide, "ABC"));
+        assert!(!eq_ignore_ascii_case_wide_str(&wide, "abc\u{00E9}"));
+        assert!(!eq_ignore_ascii_case_wide_str(&wide, "\u{00E9}"));
     }
 }

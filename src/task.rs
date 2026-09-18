@@ -28,31 +28,27 @@ pub fn decode_process_output(raw: &[u8]) -> String {
     if raw.is_empty() {
         return String::new();
     }
+    // Check for UTF-16 LE BOM (0xFF, 0xFE) emitted by certain Windows commands
+    if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+        let u16_data: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16_data).trim().to_string();
+    }
     // If output is valid UTF-8, prefer it directly
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.trim().to_string();
     }
     // Decode via Win32 OEM code page (CP_OEMCP = 1) for localized Windows console error messages
+    let raw_len = i32::try_from(raw.len()).unwrap_or(i32::MAX);
     unsafe {
         const CP_OEMCP: u32 = 1;
-        let len = MultiByteToWideChar(
-            CP_OEMCP,
-            0,
-            raw.as_ptr(),
-            raw.len() as i32,
-            std::ptr::null_mut(),
-            0,
-        );
+        let len = MultiByteToWideChar(CP_OEMCP, 0, raw.as_ptr(), raw_len, std::ptr::null_mut(), 0);
         if len > 0 {
             let mut wide = vec![0u16; len as usize];
-            let written = MultiByteToWideChar(
-                CP_OEMCP,
-                0,
-                raw.as_ptr(),
-                raw.len() as i32,
-                wide.as_mut_ptr(),
-                len,
-            );
+            let written =
+                MultiByteToWideChar(CP_OEMCP, 0, raw.as_ptr(), raw_len, wide.as_mut_ptr(), len);
             if written > 0 {
                 return String::from_utf16_lossy(&wide[..written as usize])
                     .trim()
@@ -446,7 +442,8 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     }
 }
 
-pub fn query_task_status() -> Result<TaskStatusDetails, String> {
+pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
+    let task_file = get_system32_path(&format!("Tasks\\{}", TASK_NAME));
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
         .args(["/query", "/tn", TASK_NAME, "/xml"])
@@ -454,17 +451,23 @@ pub fn query_task_status() -> Result<TaskStatusDetails, String> {
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
+        // If the task file in System32\Tasks does not exist, the task is definitely not registered.
+        // This provides 100% reliable, language-independent detection without console scraping.
+        if !task_file.exists() {
+            return Ok(None);
+        }
+
         // Capture both stdout and stderr since schtasks writes failure messages across both streams
         let err = decode_process_output(&output.stderr);
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
         if combined.is_empty() {
-            return Err("Task is not registered".to_string());
+            return Ok(None);
         }
         return Err(format!("Query failed (schtasks: {})", combined));
     }
 
-    Ok(parse_task_xml_status(&output.stdout))
+    Ok(Some(parse_task_xml_status(&output.stdout)))
 }
 
 #[cfg(test)]
@@ -585,5 +588,15 @@ mod tests {
         assert_eq!(decode_process_output(b""), "");
         assert_eq!(decode_process_output(b"Hello World"), "Hello World");
         assert_eq!(decode_process_output(b"  trimmed  \r\n"), "trimmed");
+    }
+
+    #[test]
+    fn test_decode_process_output_utf16_bom() {
+        let utf16_str = "Error: File not found\r\n";
+        let mut raw = vec![0xFF, 0xFE];
+        for u in utf16_str.encode_utf16() {
+            raw.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(decode_process_output(&raw), "Error: File not found");
     }
 }

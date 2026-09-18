@@ -9,9 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Restored dedicated 150ms hold in `restart_audio_engine` during dirty polling. `Command.Restart` is a write-only trigger parameter that does not toggle `is_parameters_dirty()`; premature breakout after 15ms unmapped shared memory before Voicemeeter's message loop could consume the command.
-- Hardened `install.bat` and `uninstall.bat` against command injection via delayed expansion (`EnableDelayedExpansion`), strict digit validation for `--delay-ms`, and quoted error messages. Added support for `--flag=value` syntax in `install.bat`.
-- Fixed hardware adapter description truncation in `clean_device_name` by replacing naive `rfind(" (")` with depth-counted parenthesis matching from the end of the string, preventing truncation of device names with qualifiers (e.g. `(SST)`, `(Generic)`).
+- Hardened `install.bat` against command injection and double expansion (CWE-78 / CWE-88) by migrating to `EnableDelayedExpansion`, eliminating `call set`, stripping duplicate outer quotes, and disabling `eol` comment parsing in numeric validation.
+- Preserved user-specified `--device` argument verbatim in `handle_install`, preventing `clean_device_name` from altering explicit user input and breaking Event 65 exact XPath matching.
+- Restricted `clean_device_name` parenthetical extraction to recognized audio endpoint roles (`ENDPOINT_ROLES`), preventing hardware devices with parenthetical qualifiers (e.g. `(SST)`, `(Generic)`) from being truncated.
+- Replaced fragile localized string scraping in `handle_status` with language-independent `System32\Tasks` file verification and structured `Option<TaskStatusDetails>` query results.
+- Added UTF-16 LE BOM detection and checked length cast in `decode_process_output`.
+- Fixed `parse_uninstall_string_dir` to handle unquoted registry paths with `.exe` in arguments and verified candidate file existence on disk.
+- Enforced non-ASCII input rejection at runtime in `eq_ignore_ascii_case_wide_str` across all build profiles.
+- Rejected all ASCII control characters (`is_ascii_control()`) in CLI option parsing for `--device` and `--user`.
+- Added `checks: write` permissions and Rust toolchain setup to `.github/workflows/security.yml` with `rustsec/audit-check@v2.0.0`.
+- Expanded MSRV CI workflow to matrix-test both `x86_64` and `i686` targets with pinned toolchain actions.
 - Added multi-instance numeric suffix stripping in `clean_device_name` for duplicate Windows endpoints (e.g. `Speakers (RODE NT-USB) (1)`).
 - Guarded `handle_install` against registering empty device filters (`DeviceName=''`) when prefix stripping leaves an empty string, falling back to wildcard matching with an explicit warning.
 - Extracted `parse_task_xml_status` into a shared function called by both `query_task_status` and unit tests, eliminating test mock duplication.

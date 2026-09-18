@@ -37,11 +37,17 @@ jobs:
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Run Cargo Audit
-        uses: rustsec/audit-check@v1
+        uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -109,6 +109,37 @@ Examples:
 // that happen to contain ": " (e.g. "Focusrite: Line In") from being incorrectly stripped.
 const DRIVER_PREFIXES: &[&str] = &["WDM", "MME", "KS", "ASIO", "DirectSound"];
 
+const ENDPOINT_ROLES: &[&str] = &[
+    "speakers",
+    "headphones",
+    "headset",
+    "headset earphone",
+    "earphone",
+    "lautsprecher",
+    "kopfhörer",
+    "altavoces",
+    "auriculares",
+    "écouteurs",
+    "enceintes",
+    "haut-parleurs",
+    "casque",
+    "microphone",
+    "micro",
+    "line in",
+    "line out",
+    "digital audio",
+    "digital output",
+    "audio out",
+    "スピーカー",
+    "ヘッドフォン",
+    "ヘッドセット",
+    "扬声器",
+    "耳机",
+    "스피커",
+    "헤드폰",
+    "헤드셋",
+];
+
 pub fn clean_device_name(raw: &str) -> String {
     let mut s = raw.trim();
 
@@ -154,6 +185,8 @@ pub fn clean_device_name(raw: &str) -> String {
     // Hardware descriptions can contain nested parentheticals (e.g. "Speakers (Realtek High Definition Audio (SST))").
     // Walk backwards from the terminal ')' matching opening '(' by depth to accurately
     // extract the complete hardware description without truncating nested qualifiers.
+    // Ensure the prefix matches an endpoint role before stripping to avoid discarding
+    // hardware names that end in parentheticals (e.g. "Realtek High Definition Audio (SST)").
     if s.ends_with(')') {
         let mut depth = 0;
         let mut match_pos = None;
@@ -171,9 +204,16 @@ pub fn clean_device_name(raw: &str) -> String {
             }
         }
         if let Some(open_idx) = match_pos {
-            let inner = s[open_idx + 1..s.len() - 1].trim();
-            if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
-                s = inner;
+            let role = s[..open_idx].trim();
+            let role_lower = role.to_lowercase();
+            let is_role = ENDPOINT_ROLES.iter().any(|&r| {
+                role.eq_ignore_ascii_case(r) || role_lower.contains(r) || role.contains(r)
+            });
+            if is_role {
+                let inner = s[open_idx + 1..s.len() - 1].trim();
+                if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
+                    s = inner;
+                }
             }
         }
     }
@@ -258,10 +298,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --device cannot be empty".to_string());
             }
-            if val
-                .chars()
-                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
-            {
+            if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
             }
             if val.contains('\'') && val.contains('"') {
@@ -274,10 +311,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --device cannot be empty".to_string());
             }
-            if val
-                .chars()
-                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
-            {
+            if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
             }
             if val.contains('\'') && val.contains('"') {
@@ -293,10 +327,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --user cannot be empty".to_string());
             }
-            if val
-                .chars()
-                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
-            {
+            if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --user contains illegal control characters".to_string());
             }
             user = Some(val.to_string());
@@ -306,10 +337,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.is_empty() {
                 return Err("Value for --user cannot be empty".to_string());
             }
-            if val
-                .chars()
-                .any(|c| c < ' ' && c != '\t' && c != '\n' && c != '\r')
-            {
+            if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --user contains illegal control characters".to_string());
             }
             user = Some(val.to_string());
@@ -418,8 +446,9 @@ fn handle_install(args: &[String]) {
         std::process::exit(1);
     }
 
-    // Clean user-specified device name if provided to strip driver prefixes or endpoint roles
-    let mut device_name = opts.device.as_deref().map(clean_device_name);
+    // Use user-specified device name verbatim if provided.
+    // clean_device_name is ONLY applied to auto-detected Voicemeeter A1 names.
+    let mut device_name = opts.device;
     if let Some(ref d) = device_name {
         if d.is_empty() || d == "-" {
             device_name = None;
@@ -587,7 +616,7 @@ fn handle_status(args: &[String]) {
 
     println!("\n=== Task Scheduler Trigger Status ===");
     match task::query_task_status() {
-        Ok(status) => {
+        Ok(Some(status)) => {
             let status_desc = if !status.is_enabled {
                 "REGISTERED (DISABLED)"
             } else {
@@ -596,40 +625,14 @@ fn handle_status(args: &[String]) {
             println!("  Task status     : {}", status_desc);
             println!("  XML definition  : Valid ({} bytes)", status.xml_raw.len());
         }
+        Ok(None) => {
+            println!("  Task status     : NOT REGISTERED");
+            println!("  Run 'earplugger install' to activate.");
+        }
         Err(e) => {
-            let lower = e.to_ascii_lowercase();
-            if e == "Task is not registered"
-                || lower.contains("cannot find")
-                || lower.contains("could not be found")
-                || lower.contains("not registered")
-                || lower.contains("nicht finden")
-                || lower.contains("nicht gefunden")
-                || lower.contains("introuvable")
-                || lower.contains("ne peut trouver")
-                || lower.contains("no such file")
-                || lower.contains("no puede encontrar")
-                || lower.contains("no se puede encontrar")
-                || lower.contains("no existe")
-                || lower.contains("impossibile trovare")
-                || lower.contains("non trovato")
-                || lower.contains("não pode encontrar")
-                || lower.contains("não foi possível encontrar")
-                || lower.contains("не удается найти")
-                || lower.contains("не найден")
-                || lower.contains("找不到")
-                || lower.contains("不存在")
-                || lower.contains("見つかりません")
-                || lower.contains("存在しません")
-                || lower.contains("찾을 수 없습니다")
-                || lower.contains("없습니다")
-            {
-                println!("  Task status     : NOT REGISTERED");
-                println!("  Run 'earplugger install' to activate.");
-            } else {
-                eprintln!("  Task status     : ERROR QUERYING TASK");
-                eprintln!("  Details         : {}", e);
-                std::process::exit(1);
-            }
+            eprintln!("  Task status     : ERROR QUERYING TASK");
+            eprintln!("  Details         : {}", e);
+            std::process::exit(1);
         }
     }
 }
@@ -891,8 +894,27 @@ mod tests {
         let args_ctrl_device = vec!["--device".to_string(), "Device\x01Name".to_string()];
         assert!(parse_options(&args_ctrl_device).is_err());
 
+        let args_newline = vec!["--device".to_string(), "Device\nName".to_string()];
+        assert!(parse_options(&args_newline).is_err());
+
+        let args_cr = vec!["--user=User\rName".to_string()];
+        assert!(parse_options(&args_cr).is_err());
+
         let args_ctrl_user = vec!["--user=\x1f".to_string()];
         assert!(parse_options(&args_ctrl_user).is_err());
+    }
+
+    #[test]
+    fn test_clean_device_name_without_endpoint_role_not_truncated() {
+        // When device name ends in parenthetical but has no endpoint role, it must NOT be truncated to the qualifier.
+        assert_eq!(
+            clean_device_name("Realtek High Definition Audio (SST)"),
+            "Realtek High Definition Audio (SST)"
+        );
+        assert_eq!(
+            clean_device_name("Focusrite USB Audio (Generic)"),
+            "Focusrite USB Audio (Generic)"
+        );
     }
 
     #[test]

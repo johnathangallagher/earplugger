@@ -12,7 +12,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-setlocal DisableDelayedExpansion
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "EXE_PATH="
@@ -58,8 +58,8 @@ if /i "%~1"=="--device" (
 
 rem Support --device=<NAME>
 set "ARG=%~1"
-if /i "%ARG:~0,9%"=="--device=" (
-    set "OPT_DEVICE=%ARG:~9%"
+if /i "!ARG:~0,9!"=="--device=" (
+    for /f "delims=" %%V in ("!ARG:~9!") do set "OPT_DEVICE=%%~V"
     if not defined OPT_DEVICE (
         echo [-] Missing value for --device
         pause
@@ -75,7 +75,7 @@ if /i "%~1"=="--delay-ms" (
         pause
         exit /b 1
     )
-    for /f "delims=0123456789" %%A in ("%~2") do (
+    for /f "delims=0123456789 eol=" %%A in ("%~2") do (
         echo [-] Invalid numeric value for --delay-ms: "%~2"
         pause
         exit /b 1
@@ -85,15 +85,15 @@ if /i "%~1"=="--delay-ms" (
 )
 
 rem Support --delay-ms=<MS>
-if /i "%ARG:~0,11%"=="--delay-ms=" (
-    set "OPT_DELAY=%ARG:~11%"
+if /i "!ARG:~0,11!"=="--delay-ms=" (
+    for /f "delims=" %%V in ("!ARG:~11!") do set "OPT_DELAY=%%~V"
     if not defined OPT_DELAY (
         echo [-] Missing value for --delay-ms
         pause
         exit /b 1
     )
-    for /f "delims=0123456789" %%A in ("%ARG:~11%") do (
-        echo [-] Invalid numeric value for --delay-ms: "%ARG:~11%"
+    for /f "delims=0123456789 eol=" %%A in ("!OPT_DELAY!") do (
+        echo [-] Invalid numeric value for --delay-ms: "!OPT_DELAY!"
         pause
         exit /b 1
     )
@@ -112,8 +112,8 @@ if /i "%~1"=="--user" (
 )
 
 rem Support --user=<USERNAME>
-if /i "%ARG:~0,7%"=="--user=" (
-    set "OPT_USER=%ARG:~7%"
+if /i "!ARG:~0,7!"=="--user=" (
+    for /f "delims=" %%V in ("!ARG:~7!") do set "OPT_USER=%%~V"
     if not defined OPT_USER (
         echo [-] Missing value for --user
         pause
@@ -139,11 +139,11 @@ exit /b 0
 
 :run_install
 set "CMD_ARGS="
-if defined OPT_DEVICE call set "CMD_ARGS=%%CMD_ARGS%% --device "%%OPT_DEVICE%%""
-if defined OPT_DELAY call set "CMD_ARGS=%%CMD_ARGS%% --delay-ms %%OPT_DELAY%%"
-if defined OPT_USER call set "CMD_ARGS=%%CMD_ARGS%% --user "%%OPT_USER%%""
+if defined OPT_DEVICE set "CMD_ARGS=!CMD_ARGS! --device "!OPT_DEVICE!""
+if defined OPT_DELAY set "CMD_ARGS=!CMD_ARGS! --delay-ms !OPT_DELAY!"
+if defined OPT_USER set "CMD_ARGS=!CMD_ARGS! --user "!OPT_USER!""
 
-"%EXE_PATH%" install%CMD_ARGS%
+"%EXE_PATH%" install!CMD_ARGS!
 if errorlevel 1 (
     echo [-] Installation failed.
     pause
