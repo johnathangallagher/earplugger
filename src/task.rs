@@ -14,6 +14,49 @@ pub fn get_exe_path() -> Result<PathBuf, String> {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetSystemDirectoryW(lpBuffer: *mut u16, uSize: u32) -> u32;
+    fn MultiByteToWideChar(
+        CodePage: u32,
+        dwFlags: u32,
+        lpMultiByteStr: *const u8,
+        cbMultiByte: i32,
+        lpWideCharStr: *mut u16,
+        cchWideChar: i32,
+    ) -> i32;
+}
+
+pub fn decode_process_output(raw: &[u8]) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    // If output is valid UTF-8, prefer it directly
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return s.trim().to_string();
+    }
+    // Decode via Win32 OEM code page (CP_OEMCP = 1) for localized Windows console error messages
+    unsafe {
+        const CP_OEMCP: u32 = 1;
+        let len = MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            raw.as_ptr(),
+            raw.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len > 0 {
+            let mut wide = vec![0u16; len as usize];
+            MultiByteToWideChar(
+                CP_OEMCP,
+                0,
+                raw.as_ptr(),
+                raw.len() as i32,
+                wide.as_mut_ptr(),
+                len,
+            );
+            return String::from_utf16_lossy(&wide).trim().to_string();
+        }
+    }
+    String::from_utf8_lossy(raw).trim().to_string()
 }
 
 fn get_system32_path(binary: &str) -> PathBuf {
@@ -158,6 +201,13 @@ pub fn generate_task_xml(
         _ => String::new(),
     };
 
+    // Scale ExecutionTimeLimit to accommodate the configured delay plus a 30-second buffer.
+    // For default 150ms delay, this yields PT30S. For maximum 30,000ms delay, this yields PT60S,
+    // preventing Task Scheduler from forcefully terminating the process before Voicemeeter
+    // finishes restarting and drops FFI resources cleanly.
+    let time_limit_secs = ((delay_ms / 1000) + 30).max(30);
+    let time_limit_iso = format!("PT{}S", time_limit_secs);
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -193,7 +243,7 @@ pub fn generate_task_xml(
     <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT30S</ExecutionTimeLimit>
+    <ExecutionTimeLimit>{}</ExecutionTimeLimit>
     <Priority>4</Priority>
   </Settings>
   <Actions Context="Author">
@@ -203,7 +253,7 @@ pub fn generate_task_xml(
     </Exec>
   </Actions>
 </Task>"#,
-        escaped_subscription, user_elem, escaped_exe, args_elem
+        escaped_subscription, user_elem, time_limit_iso, escaped_exe, args_elem
     )
 }
 
@@ -215,12 +265,12 @@ pub fn enable_audio_operational_log() -> Result<(), String> {
         .map_err(|e| format!("Failed to invoke wevtutil.exe: {}", e))?;
 
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
+        let err = decode_process_output(&output.stderr);
+        let out = decode_process_output(&output.stdout);
+        let msg = format!("{} {}", out, err).trim().to_string();
         return Err(format!(
-            "wevtutil failed to enable Microsoft-Windows-Audio/Operational log: {} {}",
-            out.trim(),
-            err.trim()
+            "wevtutil failed to enable Microsoft-Windows-Audio/Operational log: {}",
+            msg
         ));
     }
 
@@ -235,12 +285,12 @@ pub fn disable_audio_operational_log() -> Result<(), String> {
         .map_err(|e| format!("Failed to invoke wevtutil.exe: {}", e))?;
 
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
+        let err = decode_process_output(&output.stderr);
+        let out = decode_process_output(&output.stdout);
+        let msg = format!("{} {}", out, err).trim().to_string();
         return Err(format!(
-            "wevtutil failed to disable Microsoft-Windows-Audio/Operational log: {} {}",
-            out.trim(),
-            err.trim()
+            "wevtutil failed to disable Microsoft-Windows-Audio/Operational log: {}",
+            msg
         ));
     }
 
@@ -325,9 +375,10 @@ pub fn install_task(
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("schtasks failed: {} {}", out.trim(), err.trim()));
+        let err = decode_process_output(&output.stderr);
+        let out = decode_process_output(&output.stdout);
+        let msg = format!("{} {}", out, err).trim().to_string();
+        return Err(format!("schtasks failed: {}", msg));
     }
 
     Ok(())
@@ -341,13 +392,10 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
-        return Err(format!(
-            "schtasks delete failed: {} {}",
-            out.trim(),
-            err.trim()
-        ));
+        let err = decode_process_output(&output.stderr);
+        let out = decode_process_output(&output.stdout);
+        let msg = format!("{} {}", out, err).trim().to_string();
+        return Err(format!("schtasks delete failed: {}", msg));
     }
 
     if disable_channel {
@@ -389,10 +437,18 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         &xml[..]
     };
 
-    // Case-insensitive check for disabled state, ignoring whitespace variations
+    // Case-insensitive check for disabled state, ignoring whitespace variations inside <Enabled>...</Enabled>
     let lower = settings_block.to_ascii_lowercase();
-    let is_enabled =
-        !lower.contains("<enabled>false</enabled>") && !lower.contains("<enabled>0</enabled>");
+    let is_enabled = if let Some(e_start) = lower.find("<enabled>") {
+        if let Some(e_end) = lower[e_start + 9..].find("</enabled>") {
+            let val = lower[e_start + 9..e_start + 9 + e_end].trim();
+            val != "false" && val != "0"
+        } else {
+            true
+        }
+    } else {
+        true
+    };
 
     TaskStatusDetails {
         is_enabled,
@@ -409,9 +465,9 @@ pub fn query_task_status() -> Result<TaskStatusDetails, String> {
 
     if !output.status.success() {
         // Capture both stdout and stderr since schtasks writes failure messages across both streams
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{} {}", out.trim(), err.trim()).trim().to_string();
+        let err = decode_process_output(&output.stderr);
+        let out = decode_process_output(&output.stdout);
+        let combined = format!("{} {}", out, err).trim().to_string();
         if combined.is_empty() {
             return Err("Task is not registered".to_string());
         }
@@ -517,5 +573,28 @@ mod tests {
         let upper_xml = "<Task><Settings><Enabled>FALSE</Enabled></Settings></Task>";
         let status_upper = parse_task_xml_status(upper_xml.as_bytes());
         assert!(!status_upper.is_enabled);
+
+        // Test whitespace inside <Enabled> tag (e.g. " false ")
+        let ws_xml = "<Task><Settings><Enabled>  false  </Enabled></Settings></Task>";
+        let status_ws = parse_task_xml_status(ws_xml.as_bytes());
+        assert!(!status_ws.is_enabled);
+
+        // Test newline inside <Enabled> tag
+        let nl_xml = "<Task><Settings><Enabled>\r\n0\r\n</Enabled></Settings></Task>";
+        let status_nl = parse_task_xml_status(nl_xml.as_bytes());
+        assert!(!status_nl.is_enabled);
+    }
+
+    #[test]
+    fn test_generate_task_xml_scaled_execution_time_limit() {
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None);
+        assert!(xml.contains("<ExecutionTimeLimit>PT60S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn test_decode_process_output_utf8_and_empty() {
+        assert_eq!(decode_process_output(b""), "");
+        assert_eq!(decode_process_output(b"Hello World"), "Hello World");
+        assert_eq!(decode_process_output(b"  trimmed  \r\n"), "trimmed");
     }
 }

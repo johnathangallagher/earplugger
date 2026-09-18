@@ -35,3 +35,16 @@ jobs:
         with:
           name: earplugger-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/earplugger.exe
+
+  msrv:
+    name: Verify MSRV (1.85.0)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MSRV Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          targets: x86_64-pc-windows-msvc
+      - name: Check against MSRV
+        run: cargo check --target x86_64-pc-windows-msvc --all-targets

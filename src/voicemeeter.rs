@@ -97,11 +97,11 @@ fn parse_uninstall_string_dir(raw: &str) -> Option<PathBuf> {
             trimmed.trim_matches('"')
         }
     } else if let Some(exe_end) = trimmed
-        // Use ASCII-safe case-insensitive search to avoid to_lowercase() byte-length mismatch
-        // on non-ASCII path characters (e.g. Ä, İ) which could cause incorrect slice indices.
+        // Use ASCII-safe case-insensitive reverse search to match the actual executable extension,
+        // preventing truncation if an intermediate directory name contains '.exe' (e.g. C:\Tools.exe\uninstall.exe).
         .as_bytes()
         .windows(4)
-        .position(|w| w.eq_ignore_ascii_case(b".exe"))
+        .rposition(|w| w.eq_ignore_ascii_case(b".exe"))
     {
         &trimmed[..exe_end + 4]
     } else if let Some(space_idx) = trimmed.find(' ') {
@@ -301,7 +301,12 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
         DLL_NAME
     )));
 
-    search_paths.into_iter().find(|p| p.exists())
+    // Enforce that all candidate search paths are strictly absolute before checking existence.
+    // Relative paths passed to LoadLibraryExW with LOAD_WITH_ALTERED_SEARCH_PATH produce Win32
+    // undefined behavior and risk DLL hijacking (CWE-426) if run from an untrusted working directory.
+    search_paths
+        .into_iter()
+        .find(|p| p.is_absolute() && p.exists())
 }
 
 // eq_ignore_ascii_case_wide_str compares a NUL-excluded wide string slice against an ASCII &str.
@@ -653,6 +658,13 @@ mod tests {
         assert_eq!(
             parse_uninstall_string_dir(simple),
             Some(PathBuf::from(r"C:\Tools\Voicemeeter"))
+        );
+
+        // Path with intermediate directory containing '.exe' (e.g. "Tools.exe.dir")
+        let intermediate_exe = r#"C:\Tools.exe.dir\Voicemeeter\unins000.exe /all"#;
+        assert_eq!(
+            parse_uninstall_string_dir(intermediate_exe),
+            Some(PathBuf::from(r"C:\Tools.exe.dir\Voicemeeter"))
         );
     }
 }

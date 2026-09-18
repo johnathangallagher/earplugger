@@ -1,11 +1,8 @@
 @echo off
-setlocal EnableDelayedExpansion
-cd /d "%~dp0"
-
-set "ARG=%~1"
-if /i "!ARG!"=="--help" goto show_help
-if /i "!ARG!"=="-h" goto show_help
-if "!ARG!"=="/?" goto show_help
+set "RAW_ARG=%~1"
+if /i "%RAW_ARG%"=="--help" goto show_help
+if /i "%RAW_ARG%"=="-h" goto show_help
+if "%RAW_ARG%"=="/?" goto show_help
 
 net session >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -14,6 +11,9 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+
+setlocal EnableDelayedExpansion
+cd /d "%~dp0"
 
 set "EXE_PATH="
 if exist "%~dp0earplugger.exe" (
@@ -32,10 +32,11 @@ if exist "%~dp0earplugger.exe" (
 )
 
 echo [*] Installing Task Scheduler trigger...
-rem Pass only the known-safe flags accepted by 'earplugger install'.
-rem Quotes are stripped and re-wrapped so multi-word values (e.g. --device="RODE NT-USB")
-rem and domain users (e.g. --user="DOMAIN\User") pass intact without double quotes.
-set "EXTRA_ARGS="
+rem Parse only the known-safe flags accepted by 'earplugger install'.
+set "OPT_DEVICE="
+set "OPT_DELAY="
+set "OPT_USER="
+
 :parse_args
 if "%~1"=="" goto run_install
 
@@ -55,7 +56,7 @@ if /i "!ARG:~0,9!"=="--device=" (
         pause
         exit /b 1
     )
-    set "EXTRA_ARGS=!EXTRA_ARGS! --device "!VAL!""
+    set "OPT_DEVICE=!VAL!"
     shift & goto parse_args
 )
 
@@ -68,7 +69,7 @@ if /i "%~1"=="--device" (
     )
     set "VAL=%~2"
     set "VAL=!VAL:"=!"
-    set "EXTRA_ARGS=!EXTRA_ARGS! --device "!VAL!""
+    set "OPT_DEVICE=!VAL!"
     shift & shift & goto parse_args
 )
 
@@ -86,7 +87,7 @@ if /i "!ARG:~0,11!"=="--delay-ms=" (
         pause
         exit /b 1
     )
-    set "EXTRA_ARGS=!EXTRA_ARGS! --delay-ms !VAL!"
+    set "OPT_DELAY=!VAL!"
     shift & goto parse_args
 )
 
@@ -104,7 +105,7 @@ if /i "%~1"=="--delay-ms" (
         pause
         exit /b 1
     )
-    set "EXTRA_ARGS=!EXTRA_ARGS! --delay-ms !VAL!"
+    set "OPT_DELAY=!VAL!"
     shift & shift & goto parse_args
 )
 
@@ -117,7 +118,7 @@ if /i "!ARG:~0,7!"=="--user=" (
         pause
         exit /b 1
     )
-    set "EXTRA_ARGS=!EXTRA_ARGS! --user "!VAL!""
+    set "OPT_USER=!VAL!"
     shift & goto parse_args
 )
 
@@ -130,7 +131,7 @@ if /i "%~1"=="--user" (
     )
     set "VAL=%~2"
     set "VAL=!VAL:"=!"
-    set "EXTRA_ARGS=!EXTRA_ARGS! --user "!VAL!""
+    set "OPT_USER=!VAL!"
     shift & shift & goto parse_args
 )
 
@@ -150,12 +151,18 @@ echo   --help, -h, /?        Show this help message
 exit /b 0
 
 :run_install
-"%EXE_PATH%" install!EXTRA_ARGS!
-if %ERRORLEVEL% NEQ 0 (
-    echo [-] Installation failed with exit code %ERRORLEVEL%.
+set "CMD_ARGS="
+if defined OPT_DEVICE set "CMD_ARGS=!CMD_ARGS! --device "!OPT_DEVICE!""
+if defined OPT_DELAY set "CMD_ARGS=!CMD_ARGS! --delay-ms !OPT_DELAY!"
+if defined OPT_USER set "CMD_ARGS=!CMD_ARGS! --user "!OPT_USER!""
+
+"%EXE_PATH%" install!CMD_ARGS!
+if !ERRORLEVEL! NEQ 0 (
+    echo [-] Installation failed with exit code !ERRORLEVEL!.
     pause
-    exit /b %ERRORLEVEL%
+    exit /b !ERRORLEVEL!
 )
 
 echo [+] Installation complete.
 pause
+exit /b 0

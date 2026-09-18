@@ -122,11 +122,25 @@ pub fn clean_device_name(raw: &str) -> String {
         }
     }
 
-    // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first
+    // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first,
+    // as well as non-hardware trailing qualifiers like " (Loopback)" or " (Enhanced)".
+    const TRAILING_QUALIFIERS: &[&str] = &[
+        "loopback",
+        "enhanced",
+        "echo cancelling",
+        "echo-cancelling",
+        "default device",
+    ];
+
     while s.ends_with(')') {
         if let Some(last_paren) = s.rfind(" (") {
             let inner = s[last_paren + 2..s.len() - 1].trim();
-            if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+            if !inner.is_empty()
+                && (inner.chars().all(|c| c.is_ascii_digit())
+                    || TRAILING_QUALIFIERS
+                        .iter()
+                        .any(|&q| inner.eq_ignore_ascii_case(q)))
+            {
                 s = s[..last_paren].trim();
                 continue;
             }
@@ -198,7 +212,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     while i < args.len() {
         let arg = &args[i];
 
-        if arg == "--help" || arg == "-h" {
+        if arg == "--help" || arg == "-h" || arg == "/?" {
             help_requested = true;
             i += 1;
         } else if arg == "--silent" {
@@ -360,6 +374,20 @@ fn handle_restart(args: &[String]) {
         }
         if !opts.silent {
             eprintln!("[earplugger] Error: {}", e);
+        } else if let Ok(temp) = std::env::var("TEMP") {
+            let log_path = std::path::Path::new(&temp).join("earplugger.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                use std::io::Write;
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = writeln!(f, "[epoch: {}] Restart error: {}", secs, e);
+            }
         }
         std::process::exit(1);
     } else if !opts.silent {
@@ -595,7 +623,7 @@ fn main() {
         return;
     }
 
-    if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+    if args[0] == "--help" || args[0] == "-h" || args[0] == "help" || args[0] == "/?" {
         print_help();
         return;
     }
@@ -855,5 +883,26 @@ mod tests {
         // Numeric index followed by dash must be stripped
         assert_eq!(clean_device_name("2- USB Audio"), "USB Audio");
         assert_eq!(clean_device_name("10- RODE NT-USB"), "RODE NT-USB");
+    }
+
+    #[test]
+    fn test_clean_device_name_trailing_qualifiers() {
+        // Trailing qualifiers like (Enhanced) or (Loopback) must be stripped
+        // to expose the actual hardware description.
+        assert_eq!(
+            clean_device_name("Speakers (Realtek Audio) (Enhanced)"),
+            "Realtek Audio"
+        );
+        assert_eq!(
+            clean_device_name("Headphones (Generic USB) (Loopback)"),
+            "Generic USB"
+        );
+    }
+
+    #[test]
+    fn test_parse_options_slash_question_mark_help() {
+        let args = vec!["/?".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(opts.help_requested);
     }
 }
