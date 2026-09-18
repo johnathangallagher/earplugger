@@ -28,25 +28,41 @@ if exist "%~dp0earplugger.exe" (
 
 echo [*] Installing Task Scheduler trigger...
 rem Pass only the known-safe flags accepted by 'earplugger install'.
-rem Using %* directly from cmd.exe would allow shell metacharacters (& | > <)
-rem in arguments to be interpreted by cmd before reaching earplugger.
+rem Quotes are preserved so multi-word values (e.g. --device "RODE NT-USB")
+rem and domain users (e.g. --user "DOMAIN\User") pass intact to earplugger.
 set "EXTRA_ARGS="
 :parse_args
 if "%~1"=="" goto run_install
 if /i "%~1"=="--device" (
-    set "EXTRA_ARGS=%EXTRA_ARGS% --device %~2"
+    if "%~2"=="" (
+        echo [-] Missing value for --device
+        pause
+        exit /b 1
+    )
+    set "EXTRA_ARGS=%EXTRA_ARGS% --device "%~2""
     shift & shift & goto parse_args
 )
 if /i "%~1"=="--delay-ms" (
+    if "%~2"=="" (
+        echo [-] Missing value for --delay-ms
+        pause
+        exit /b 1
+    )
     set "EXTRA_ARGS=%EXTRA_ARGS% --delay-ms %~2"
     shift & shift & goto parse_args
 )
 if /i "%~1"=="--user" (
-    set "EXTRA_ARGS=%EXTRA_ARGS% --user %~2"
+    if "%~2"=="" (
+        echo [-] Missing value for --user
+        pause
+        exit /b 1
+    )
+    set "EXTRA_ARGS=%EXTRA_ARGS% --user "%~2""
     shift & shift & goto parse_args
 )
 echo [-] Unknown argument: %~1
-echo     Accepted: --device NAME, --delay-ms MS, --user USERNAME
+echo     Accepted: --device "NAME", --delay-ms MS, --user "USERNAME"
+pause
 exit /b 1
 
 :run_install

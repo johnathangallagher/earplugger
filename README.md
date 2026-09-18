@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
 
-> **Zero-overhead, sub-quarter-second Voicemeeter auto-resynchronizer for KVM switches and USB audio disconnects.**
+> **Zero-overhead, sub-second Voicemeeter auto-resynchronizer for KVM switches and USB audio disconnects.**
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
@@ -31,7 +31,7 @@ If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switc
 | **Community Polling Scripts** (e.g. Python `sleep(5)`) | Up to 5,000 ms | ~40 MB RAM | High latency: you hear 5 seconds of ear-splitting robot screeching before it restarts. Consumes CPU/RAM 24/7. |
 | **Heavy Tray Apps** (Electron/WPF) | ~300 ms | 100+ MB RAM | Huge background resource footprint just to send a single restart signal. |
 | **Raw Task Scheduler XML Gists** | ~50 ms | 0 MB | **No Debounce:** Spawns multiple concurrent `voicemeeter.exe -r` GUI windows before USB drivers finish negotiating formats, causing race conditions. |
-| **`earplugger`** | **~250–300 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (150ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
+| **`earplugger`** | **~165–300 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (150ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
 
 ---
 
@@ -52,7 +52,7 @@ sequenceDiagram
     EP->>EP: Settle Delay (150ms handshake buffer)
     EP->>VM: IPC via VoicemeeterRemote64.dll (Command.Restart = 1.0)
     VM->>VM: Flushes buffers & resyncs A1 hardware clock
-    EP-->>Task: Exits cleanly in ~250–300ms
+    EP-->>Task: Exits cleanly in ~165–300ms
 ```
 
 1. **Native OS Event Hook:** Subscribes to `Microsoft-Windows-Audio/Operational` Event ID 65 via Windows Task Scheduler. `earplugger install` automatically enables this operational event channel via `wevtutil.exe` if disabled.
@@ -96,9 +96,13 @@ earplugger.exe install
 * `earplugger` will automatically detect your currently running Voicemeeter engine and active **Hardware A1 device**.
 * It enables the `Microsoft-Windows-Audio/Operational` event log channel and registers the Windows Task Scheduler event trigger.
 
+Alternatively, if using the release ZIP package, you can simply right-click `install.bat` and select **Run as administrator**.
+
 To specify a custom device name, target user, or custom settling delay:
 ```powershell
 earplugger.exe install --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
+# Or via batch script:
+install.bat --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
 ```
 
 ### 3. Verify Status
@@ -151,9 +155,13 @@ To cleanly remove the Task Scheduler trigger:
 ```powershell
 earplugger.exe uninstall
 ```
+Or right-click `uninstall.bat` and select **Run as administrator**.
+
 To also disable the Windows Audio Operational event channel:
 ```powershell
 earplugger.exe uninstall --disable-channel
+# Or via batch script:
+uninstall.bat --disable-channel
 ```
 
 ---
