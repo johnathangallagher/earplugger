@@ -1,4 +1,4 @@
-# 🔌 earplugger
+# earplugger
 
 > [!NOTE]
 > **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
@@ -31,7 +31,7 @@ If you use **Voicemeeter** (Standard, Banana, or Potato) alongside a **KVM switc
 | **Community Polling Scripts** (e.g. Python `sleep(5)`) | Up to 5,000 ms | ~40 MB RAM | High latency: you hear 5 seconds of ear-splitting robot screeching before it restarts. Consumes CPU/RAM 24/7. |
 | **Heavy Tray Apps** (Electron/WPF) | ~300 ms | 100+ MB RAM | Huge background resource footprint just to send a single restart signal. |
 | **Raw Task Scheduler XML Gists** | ~50 ms | 0 MB | **No Debounce:** Spawns multiple concurrent `voicemeeter.exe -r` GUI windows before USB drivers finish negotiating formats, causing race conditions. |
-| ⚡ **`earplugger`** | **~100–180 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (75ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
+| **`earplugger`** | **~100–180 ms** | **0 MB (Idle)** | **Event-Driven & Settled:** Triggers instantly on Windows Audio Event 65, debounces the USB handshake (75ms), sends a native IPC restart via `VoicemeeterRemote64.dll`, and exits. |
 
 ---
 
