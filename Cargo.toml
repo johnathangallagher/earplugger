@@ -1,6 +1,6 @@
 [package]
 name = "earplugger"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["Johnathan Gallagher <johnathan@gallagher.net>"]
 description = "Lightweight, zero-overhead Windows utility to automatically resynchronize Voicemeeter audio engines on KVM and USB device reconnects"
