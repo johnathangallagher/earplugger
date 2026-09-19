@@ -19,7 +19,7 @@ jobs:
           - i686-pc-windows-msvc
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
