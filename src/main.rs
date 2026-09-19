@@ -204,9 +204,13 @@ pub fn clean_device_name(raw: &str) -> String {
         }
         if let Some(open_idx) = match_pos {
             let role = s[..open_idx].trim();
-            let role_lower = role.to_lowercase();
+            let base_role = role.split('(').next().unwrap_or("").trim();
+            let base_lower = base_role.to_lowercase();
             let is_role = ENDPOINT_ROLES.iter().any(|&r| {
-                role.eq_ignore_ascii_case(r) || role_lower.split_whitespace().any(|w| w == r)
+                role.eq_ignore_ascii_case(r)
+                    || base_lower == *r
+                    || (base_lower.ends_with(r)
+                        && base_lower[..base_lower.len() - r.len()].ends_with(' '))
             });
             if is_role {
                 let inner = s[open_idx + 1..s.len() - 1].trim();
@@ -300,6 +304,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
             }
+            if val.contains('\'') && val.contains('"') {
+                return Err("Device name cannot contain both single and double quotes (Windows Event Log XPath does not support escaped quotes or concat)".to_string());
+            }
             device = Some(val.to_string());
             i += 2;
         } else if let Some(val_str) = arg.strip_prefix("--device=") {
@@ -309,6 +316,9 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             }
             if val.chars().any(|c| c.is_ascii_control()) {
                 return Err("Value for --device contains illegal control characters".to_string());
+            }
+            if val.contains('\'') && val.contains('"') {
+                return Err("Device name cannot contain both single and double quotes (Windows Event Log XPath does not support escaped quotes or concat)".to_string());
             }
             device = Some(val.to_string());
             i += 1;
@@ -941,10 +951,41 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_options_allows_mixed_quotes() {
+    fn test_parse_options_rejects_mixed_quotes() {
         let args = vec![r#"--device=User's "DAC""#.to_string()];
-        let opts = parse_options(&args).unwrap();
-        assert_eq!(opts.device.as_deref(), Some(r#"User's "DAC""#));
+        assert!(parse_options(&args).is_err());
+        let args2 = vec!["--device".to_string(), r#"User's "DAC""#.to_string()];
+        assert!(parse_options(&args2).is_err());
+    }
+
+    #[test]
+    fn test_clean_device_name_multi_word_roles() {
+        // Multi-word roles like "Line In" or "Front Line In" must be recognized.
+        assert_eq!(
+            clean_device_name("Line In (Realtek High Definition Audio)"),
+            "Realtek High Definition Audio"
+        );
+        assert_eq!(
+            clean_device_name("Front Line In (Realtek High Definition Audio)"),
+            "Realtek High Definition Audio"
+        );
+        assert_eq!(
+            clean_device_name("Wireless Headset Earphone (RODE NT-USB)"),
+            "RODE NT-USB"
+        );
+    }
+
+    #[test]
+    fn test_clean_device_name_brand_names_not_stripped() {
+        // Brands containing role words (Microphone Labs, Speakers Corner) must NOT be stripped.
+        assert_eq!(
+            clean_device_name("Microphone Labs (USB DAC)"),
+            "Microphone Labs (USB DAC)"
+        );
+        assert_eq!(
+            clean_device_name("Speakers Corner (Interface)"),
+            "Speakers Corner (Interface)"
+        );
     }
 
     #[test]

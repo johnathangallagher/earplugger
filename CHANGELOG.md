@@ -9,15 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Hardened `install.bat` and `uninstall.bat` against phase-1 argument injection (CWE-78 / CWE-88) by placing `setlocal EnableDelayedExpansion` at script entry prior to evaluating `%1`, eliminating argument splitting vulnerabilities.
-- Replaced delayed expansion string concatenation in `install.bat` argument dispatch with direct branch dispatch, preventing exclamation marks (`!`) in device names from being stripped.
-- Fixed numeric validation delimiter syntax in `install.bat` to `eol=a delims=0123456789`, preventing space-separated whitespace delimiter bypasses.
+- Streamlined `install.bat` and `uninstall.bat` to forward command-line arguments `%*` directly to `earplugger.exe` with `DisableDelayedExpansion`, eliminating batch argument splitting, delayed expansion exclamation mark stripping, quote stripping syntax errors, and numeric validation bypasses.
+- Explicitly rejected device names containing both single and double quotes in `parse_options` and `format_xpath_string_literal` with actionable error diagnostics, preventing dead Task Scheduler triggers since Windows Event Log XPath does not support escaped quotes or `concat()`.
+- Switched Task Scheduler `<MultipleInstancesPolicy>` from `IgnoreNew` to `Queue`, ensuring secondary endpoint arrivals during composite USB device reconnects trigger follow-up resynchronizations.
+- Bound task principal `<UserId>` to the interactive user via `USERNAME` environment variable fallback when `--user` is not explicitly provided during elevated installation.
+- Hardened `install_task` temporary XML file allocation by binding `TempFileGuard` immediately upon file creation, preventing leaked temporary files in `%TEMP%` if `write_all` or `flush` fails.
+- Hardened `uninstall_task` to treat missing task deletions as non-fatal, ensuring event channel disablement (`--disable-channel`) executes cleanly even if the task was already deleted.
+- Hardened `get_system32_path` on 32-bit builds by checking whether the virtual `Sysnative` directory exists rather than destination file existence, ensuring non-existent file queries resolve to 64-bit `System32` rather than redirected `SysWOW64`.
+- Hardened `query_task_status` against unelevated execution failures where `C:\Windows\System32\Tasks` directory DACL returns `PermissionDenied`, inspecting `schtasks` stderr/stdout for missing task indicators (`0x80070002` / `cannot find the file specified`) to reliably report uninstalled state across all user privilege levels.
 - Re-initialized `entry.dwSize` before `Process32NextW` inside the Voicemeeter process enumeration loop per Win32 Toolhelp32 specifications.
-- Removed ambiguous `"micro"` shorthand from `ENDPOINT_ROLES` and implemented exact word-boundary token matching, preventing false-positive stripping of device names starting with "micro" (e.g. `Microchip Audio`, `Micronas DAC`, `Micro-Star`).
-- Removed mixed-quote rejection on `--device` in `parse_options`, allowing `format_xpath_string_literal` to safely handle mixed single and double quotes via XPath `concat()`.
+- Removed ambiguous `"micro"` shorthand from `ENDPOINT_ROLES` and implemented exact phrase and word-boundary token matching, preventing false-positive stripping of device names starting with "micro" or brand names containing role words.
 - Replaced `.to_str()` requirement on temporary XML file path with direct `&OsStr` argument passing to `schtasks.exe`, supporting arbitrary non-UTF-8 temporary directory paths.
 - Hardened `parse_task_xml_status` to evaluate both `<Settings><Enabled>` and `<EventTrigger><Enabled>` blocks, detecting trigger-level disabled status.
-- Hardened `query_task_status` to check `std::fs::metadata(&task_file)` for `io::ErrorKind::NotFound` specifically, preventing file permission or I/O errors from being misreported as uninstalled.
+- Added explicit top-level `permissions: contents: read` to `.github/workflows/ci.yml`.
 - Converted MediaWiki-style links in `docs/wiki/Home.md` to standard Markdown relative links.
 - Corrected XPath attribute quotes in `docs/wiki/Task-Scheduler-Internals.md` to match the exact single-quoted implementation.
 - Preserved user-specified `--device` argument verbatim in `handle_install`, preventing `clean_device_name` from altering explicit user input and breaking Event 65 exact XPath matching.
@@ -66,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed undefined behavior in registry deserialization by allocating directly into an aligned `Vec<u16>` buffer and validating `REG_SZ` / `REG_EXPAND_SZ` types.
 - Fixed typo in Voicemeeter Banana 64-bit process matching name (`voicemeeterpro_x64.exe`), restoring auto-restart detection.
 - Fixed `VBVMR_Login()` error handling to distinguish code `0` (success) from code `1` (Voicemeeter not launched) and negative error returns, invoking `VBVMR_Logout()` before unmapping library to prevent client resource leaks.
-- Fixed XPath generation to preserve single quotes and apostrophes in device names via XPath 1.0 `concat()`, enforcing the minimum 2-argument arity required by W3C specifications.
+- Fixed XPath generation to preserve single quotes and apostrophes in device names via double-quoted XPath string literals.
 - Fixed device name parsing to extract hardware adapters across all Windows operating system languages (e.g. German, French, Spanish, Japanese, Chinese) while preserving embedded trademarks (e.g. `Realtek(R) Audio`, `Intel(R) Display Audio`).
 - Automatically enable the `Microsoft-Windows-Audio/Operational` event log channel during installation via `wevtutil.exe` to guarantee Event 65 records on clean Windows installations.
 - Added `--disable-channel` flag to `uninstall` command to allow optional deactivation of the audio event channel.

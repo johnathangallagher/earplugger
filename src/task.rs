@@ -89,9 +89,9 @@ fn get_system32_path(binary: &str) -> PathBuf {
         // 64-bit System32, where schtasks.exe and wevtutil.exe live.
         // On a native 32-bit OS, Sysnative does not exist and we fall through to sys_dir.
         if let Some(parent) = sys_dir.parent() {
-            let sysnative = parent.join("Sysnative").join(binary);
-            if sysnative.exists() {
-                return sysnative;
+            let sysnative_dir = parent.join("Sysnative");
+            if sysnative_dir.is_dir() {
+                return sysnative_dir.join(binary);
             }
         }
     }
@@ -120,23 +120,20 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
-pub fn format_xpath_string_literal(s: &str) -> String {
+pub fn format_xpath_string_literal(s: &str) -> Result<String, String> {
     // Strip control characters
     let clean: String = s.chars().filter(|&c| c >= ' ' || c == '\t').collect();
     if !clean.contains('\'') {
-        format!("'{}'", clean)
+        Ok(format!("'{}'", clean))
     } else if !clean.contains('"') {
         // Windows Event Log query engine (wevtapi.dll) supports only a restricted subset of XPath 1.0;
         // functions like concat() are explicitly unsupported (error 15008 / ERROR_EVT_INVALID_QUERY).
         // For literals containing single quotes (e.g. "User's AirPods"), wrap in double quotes.
         // During XML emission, double quotes become &quot;, which Task Scheduler decodes back to
         // double quotes when creating the Event Log subscription.
-        format!("\"{}\"", clean)
+        Ok(format!("\"{}\"", clean))
     } else {
-        // If the string contains both single and double quotes, strip double quotes so the query
-        // is valid without invoking unsupported XPath concat().
-        let sanitized: String = clean.chars().filter(|&c| c != '"').collect();
-        format!("\"{}\"", sanitized)
+        Err("Device name cannot contain both single and double quotes (Windows Event Log XPath does not support escaped quotes or concat)".to_string())
     }
 }
 
@@ -145,10 +142,10 @@ pub fn generate_task_xml(
     device_filter: Option<&str>,
     delay_ms: u64,
     user: Option<&str>,
-) -> String {
+) -> Result<String, String> {
     let filter_clause = match device_filter {
         Some(dev) => {
-            let formatted_literal = format_xpath_string_literal(dev);
+            let formatted_literal = format_xpath_string_literal(dev)?;
             format!(
                 " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
                 formatted_literal
@@ -184,7 +181,19 @@ pub fn generate_task_xml(
                 String::new()
             }
         }
-        _ => String::new(),
+        None => {
+            if let Ok(u) = env::var("USERNAME") {
+                let trimmed = u.trim();
+                let escaped = xml_escape(trimmed);
+                if !escaped.is_empty() {
+                    format!("\n      <UserId>{}</UserId>", escaped)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        }
     };
 
     // Scale ExecutionTimeLimit to accommodate the configured delay plus a 30-second buffer.
@@ -194,7 +203,7 @@ pub fn generate_task_xml(
     let time_limit_secs = ((delay_ms / 1000) + 30).max(30);
     let time_limit_iso = format!("PT{}S", time_limit_secs);
 
-    format!(
+    Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -214,7 +223,7 @@ pub fn generate_task_xml(
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -240,7 +249,7 @@ pub fn generate_task_xml(
   </Actions>
 </Task>"#,
         escaped_subscription, user_elem, time_limit_iso, escaped_exe, args_elem
-    )
+    ))
 }
 
 pub fn enable_audio_operational_log() -> Result<(), String> {
@@ -304,7 +313,7 @@ pub fn install_task(
         .to_str()
         .ok_or_else(|| "Executable path contains non-UTF-8 characters".to_string())?;
 
-    let xml = generate_task_xml(exe_str, device_filter, delay_ms, user);
+    let xml = generate_task_xml(exe_str, device_filter, delay_ms, user)?;
 
     let utf16: Vec<u16> = xml.encode_utf16().collect();
     let mut bytes = Vec::with_capacity(utf16.len() * 2 + 2);
@@ -331,12 +340,13 @@ pub fn install_task(
             .open(&candidate)
         {
             Ok(mut file) => {
+                let guard = TempFileGuard(candidate.clone());
                 file.write_all(&bytes)
                     .map_err(|e| format!("Failed to write temporary XML file: {}", e))?;
                 // Flush to OS buffers before dropping the handle so schtasks.exe reads complete data.
                 file.flush()
                     .map_err(|e| format!("Failed to flush temporary XML file: {}", e))?;
-                temp_path = Some(candidate);
+                temp_path = Some((candidate, guard));
                 break;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -344,9 +354,8 @@ pub fn install_task(
         }
     }
 
-    let temp_xml_path =
+    let (temp_xml_path, _guard) =
         temp_path.ok_or_else(|| "Failed to allocate unique temporary XML file".to_string())?;
-    let _guard = TempFileGuard(temp_xml_path.clone());
 
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
@@ -376,15 +385,28 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         .output()
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
-    if !output.status.success() {
+    let delete_err = if !output.status.success() {
         let err = decode_process_output(&output.stderr);
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
-        return Err(format!("schtasks delete failed: {}", msg));
-    }
+        let not_found = msg.contains("0x80070002")
+            || msg.to_ascii_lowercase().contains("cannot find")
+            || msg.to_ascii_lowercase().contains("not find");
+        if not_found {
+            None
+        } else {
+            Some(format!("schtasks delete failed: {}", msg))
+        }
+    } else {
+        None
+    };
 
     if disable_channel {
         disable_audio_operational_log()?;
+    }
+
+    if let Some(err) = delete_err {
+        return Err(err);
     }
 
     Ok(())
@@ -473,21 +495,25 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         .map_err(|e| format!("Failed to invoke schtasks.exe: {}", e))?;
 
     if !output.status.success() {
-        // If the task file in System32\Tasks does not exist, the task is definitely not registered.
-        // Check metadata explicitly to only treat ErrorKind::NotFound as not registered,
-        // preventing permission denial or other I/O errors on System32\Tasks from falsely returning Ok(None).
-        match fs::metadata(&task_file) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            _ => {}
-        }
-
-        // Capture both stdout and stderr since schtasks writes failure messages across both streams
         let err = decode_process_output(&output.stderr);
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
-        if combined.is_empty() {
+
+        // Detect non-registered task status reliably:
+        // 1. If elevated (or with filesystem read rights), check if task file is missing on disk.
+        // 2. If unelevated (where C:\Windows\System32\Tasks may return PermissionDenied), check
+        //    if schtasks returned code 1 with "cannot find the file specified" (0x80070002) or empty output.
+        let file_missing =
+            matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+        let output_missing = combined.contains("0x80070002")
+            || combined.to_ascii_lowercase().contains("cannot find")
+            || combined.to_ascii_lowercase().contains("not find")
+            || combined.is_empty();
+
+        if file_missing || output_missing {
             return Ok(None);
         }
+
         return Err(format!("Query failed (schtasks: {})", combined));
     }
 
@@ -511,22 +537,28 @@ mod tests {
     #[test]
     fn test_format_xpath_string_literal_without_quotes() {
         let input = "RODE NT-USB";
-        let formatted = format_xpath_string_literal(input);
+        let formatted = format_xpath_string_literal(input).unwrap();
         assert_eq!(formatted, "'RODE NT-USB'");
     }
 
     #[test]
     fn test_format_xpath_string_literal_with_apostrophe() {
         let input = "User's AirPods";
-        let formatted = format_xpath_string_literal(input);
+        let formatted = format_xpath_string_literal(input).unwrap();
         assert_eq!(formatted, "\"User's AirPods\"");
     }
 
     #[test]
     fn test_format_xpath_string_literal_single_apostrophe() {
         let input = "'";
-        let formatted = format_xpath_string_literal(input);
+        let formatted = format_xpath_string_literal(input).unwrap();
         assert_eq!(formatted, "\"'\"");
+    }
+
+    #[test]
+    fn test_format_xpath_string_literal_mixed_quotes_error() {
+        let input = "User's \"DAC\"";
+        assert!(format_xpath_string_literal(input).is_err());
     }
 
     #[test]
@@ -536,12 +568,13 @@ mod tests {
             Some("RODE NT-USB"),
             150,
             None,
-        );
+        )
+        .unwrap();
         // Command element must NOT contain quotes (&quot;)
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
-        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>"));
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
@@ -550,7 +583,8 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_custom_delay_and_user() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"));
+        let xml =
+            generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice")).unwrap();
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
         assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
     }
@@ -603,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_scaled_execution_time_limit() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None);
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None).unwrap();
         assert!(xml.contains("<ExecutionTimeLimit>PT60S</ExecutionTimeLimit>"));
     }
 
