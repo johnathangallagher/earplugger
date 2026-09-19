@@ -13,12 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Explicitly rejected device names containing both single and double quotes in `parse_options` and `format_xpath_string_literal` with actionable error diagnostics, preventing dead Task Scheduler triggers since Windows Event Log XPath does not support escaped quotes or `concat()`.
 - Maintained Task Scheduler `<MultipleInstancesPolicy>` as `IgnoreNew` to debounce composite USB device re-enumeration storms and prevent concurrent Voicemeeter restart race conditions.
 - Omitted `<UserId>` when `--user` is unspecified, allowing Task Scheduler `<LogonType>InteractiveToken</LogonType>` to dynamically bind to whichever user is interactively logged in rather than the elevated Administrator account.
-- Invoked Win32 `FreeConsole()` at process start when `--silent` is passed, eliminating the transient 300ms console window popup when triggered by Task Scheduler on KVM switch.
-- Added dual-clause XPath matching for parenthetical device friendly names (e.g. `(Data[@Name='DeviceName']='Speakers (RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB')`), guaranteeing trigger matching whether Windows MMDevAPI logs the endpoint friendly name or hardware adapter description in Event 65.
-- Made `query_task_status` and `uninstall_task` language-independent by inspecting for specific Win32 error codes (`0x80070005`, `0x800706BA`) rather than localized English strings.
+- Invoked Win32 `FreeConsole()` inside `handle_restart` when `--silent` is passed, eliminating console window flashing while ensuring interactive subcommands and argument validation retain console output without runtime panics.
+- Added dual-clause XPath matching for parenthetical device friendly names (e.g. `(Data[@Name='DeviceName']='Speakers (RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB')`) using `clean_device_name`, guaranteeing trigger matching whether Windows MMDevAPI logs the endpoint friendly name or hardware adapter description in Event 65.
+- Invoked `clean_device_name` during Voicemeeter A1 auto-detection in `handle_install`, correctly stripping driver prefixes and endpoint indices across all driver types.
+- Hardened `parse_task_xml_status` to support attribute-bearing `<EventTrigger>` and `<Settings>` XML elements.
+- Implemented `RegKeyGuard` RAII drop wrapper in `query_registry_uninstall_dir` and replaced `.exists()` with `.is_file()` to prevent directory preloading vulnerabilities.
+- Made `query_task_status` and `uninstall_task` language-independent by inspecting `System32\Tasks` file existence and Win32 error codes.
 - Fixed 32-bit `Sysnative` redirector bypass in `get_system32_path` by testing executable file existence (`sysnative_dir.join("cmd.exe").is_file()`) instead of directory status on the virtual alias.
-- Added explicit wildcard trigger support via `--device "*"` / `--device "any"` / `--device "all"` / `--device "-"`, allowing users to deliberately bypass auto-detection when Voicemeeter is active.
-- Hardened `uninstall.bat` fallback path when `earplugger.exe` is absent: discarded `schtasks /delete` output, treated missing task as non-fatal, and scanned `%*` for `--disable-channel` anywhere in arguments.
+- Added explicit case-insensitive wildcard trigger support via `--device "*"` / `--device "any"` / `--device "all"` / `--device "-"`, allowing users to deliberately bypass auto-detection when Voicemeeter is active.
+- Hardened `uninstall.bat` fallback path when `earplugger.exe` is absent: safe argument iteration avoiding subshell pipe parsing, preserved `schtasks` error code, and checked task file existence.
 - Hardened `install_task` temporary XML file allocation by binding `TempFileGuard` immediately upon file creation, preventing leaked temporary files in `%TEMP%` if `write_all` or `flush` fails.
 - Hardened `uninstall_task` to treat missing task deletions as non-fatal, ensuring event channel disablement (`--disable-channel`) executes cleanly even if the task was already deleted.
 - Re-initialized `entry.dwSize` before `Process32NextW` inside the Voicemeeter process enumeration loop per Win32 Toolhelp32 specifications.

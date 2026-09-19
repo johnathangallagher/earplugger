@@ -106,132 +106,7 @@ Examples:
     );
 }
 
-// Known Voicemeeter driver type prefixes. Using an explicit allowlist prevents device names
-// that happen to contain ": " (e.g. "Focusrite: Line In") from being incorrectly stripped.
-const DRIVER_PREFIXES: &[&str] = &["WDM", "MME", "KS", "ASIO", "DirectSound"];
-
-const ENDPOINT_ROLES: &[&str] = &[
-    "speakers",
-    "headphones",
-    "headset",
-    "headset earphone",
-    "earphone",
-    "lautsprecher",
-    "kopfhörer",
-    "altavoces",
-    "auriculares",
-    "écouteurs",
-    "enceintes",
-    "haut-parleurs",
-    "casque",
-    "microphone",
-    "line in",
-    "line out",
-    "digital audio",
-    "digital output",
-    "audio out",
-    "スピーカー",
-    "ヘッドフォン",
-    "ヘッドセット",
-    "扬声器",
-    "耳机",
-    "스피커",
-    "헤드폰",
-    "헤드셋",
-];
-
-pub fn clean_device_name(raw: &str) -> String {
-    let mut s = raw.trim();
-
-    // Strip driver type prefix if present (e.g. "WDM: ", "MME: ", "KS: ", "ASIO: ", "DirectSound: ").
-    // Only strip prefixes that exactly match known Voicemeeter driver type names to avoid false
-    // positives on device names like "Focusrite: Line In" or "USB_Audio: Output".
-    if let Some(colon_idx) = s.find(": ") {
-        let prefix = &s[..colon_idx];
-        if DRIVER_PREFIXES.contains(&prefix) {
-            s = s[colon_idx + 2..].trim();
-        }
-    }
-
-    // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first,
-    // as well as non-hardware trailing qualifiers like " (Loopback)" or " (Enhanced)".
-    const TRAILING_QUALIFIERS: &[&str] = &[
-        "loopback",
-        "enhanced",
-        "echo cancelling",
-        "echo-cancelling",
-        "default device",
-    ];
-
-    while s.ends_with(')') {
-        if let Some(last_paren) = s.rfind(" (") {
-            let inner = s[last_paren + 2..s.len() - 1].trim();
-            if !inner.is_empty()
-                && (inner.chars().all(|c| c.is_ascii_digit())
-                    || TRAILING_QUALIFIERS
-                        .iter()
-                        .any(|&q| inner.eq_ignore_ascii_case(q)))
-            {
-                s = s[..last_paren].trim();
-                continue;
-            }
-        }
-        break;
-    }
-
-    // Windows endpoint friendly names across all languages are formatted as:
-    // "<Endpoint Role> (<Hardware Description>)"
-    // e.g., "Speakers (Realtek(R) Audio)", "Lautsprecher (RODE NT-USB)", "Altavoces (USB Audio)"
-    // Hardware descriptions can contain nested parentheticals (e.g. "Speakers (Realtek High Definition Audio (SST))").
-    // Walk backwards from the terminal ')' matching opening '(' by depth to accurately
-    // extract the complete hardware description without truncating nested qualifiers.
-    // Ensure the prefix matches an endpoint role before stripping to avoid discarding
-    // hardware names that end in parentheticals (e.g. "Realtek High Definition Audio (SST)").
-    if s.ends_with(')') {
-        let mut depth = 0;
-        let mut match_pos = None;
-        for (idx, ch) in s.char_indices().rev() {
-            if ch == ')' {
-                depth += 1;
-            } else if ch == '(' {
-                depth -= 1;
-                if depth == 0 {
-                    if idx > 0 && s.as_bytes()[idx - 1] == b' ' {
-                        match_pos = Some(idx);
-                    }
-                    break;
-                }
-            }
-        }
-        if let Some(open_idx) = match_pos {
-            let role = s[..open_idx].trim();
-            let base_role = role.split('(').next().unwrap_or("").trim();
-            let base_lower = base_role.to_lowercase();
-            let is_role = ENDPOINT_ROLES.iter().any(|&r| {
-                role.eq_ignore_ascii_case(r)
-                    || base_lower == *r
-                    || (base_lower.ends_with(r)
-                        && base_lower[..base_lower.len() - r.len()].ends_with(' '))
-            });
-            if is_role {
-                let inner = s[open_idx + 1..s.len() - 1].trim();
-                if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
-                    s = inner;
-                }
-            }
-        }
-    }
-
-    // Strip leading Windows device endpoint indices like "2- RODE NT-USB"
-    if let Some(dash_idx) = s.find("- ") {
-        let prefix = &s[..dash_idx];
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
-            s = s[dash_idx + 2..].trim();
-        }
-    }
-
-    s.to_string()
-}
+pub use task::clean_device_name;
 
 pub struct ParsedArgs {
     pub delay_ms: u64,
@@ -383,6 +258,12 @@ fn handle_restart(args: &[String]) {
         std::process::exit(1);
     }
 
+    if opts.silent {
+        unsafe {
+            FreeConsole();
+        }
+    }
+
     // Verify Voicemeeter is running BEFORE blocking on delay_ms
     if !voicemeeter::is_voicemeeter_running() {
         if !opts.silent {
@@ -450,10 +331,10 @@ fn handle_install(args: &[String]) {
         std::process::exit(1);
     }
 
-    let explicit_wildcard = matches!(
-        opts.device.as_deref(),
-        Some("*") | Some("any") | Some("all") | Some("-")
-    );
+    let explicit_wildcard = opts.device.as_deref().is_some_and(|d| {
+        let l = d.to_ascii_lowercase();
+        l == "*" || l == "any" || l == "all" || l == "-"
+    });
 
     let mut device_name = if explicit_wildcard {
         println!(
@@ -473,26 +354,13 @@ fn handle_install(args: &[String]) {
         match voicemeeter::get_a1_device_name() {
             Ok(a1) if !a1.is_empty() && a1 != "-" => {
                 println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
-                // Strip Voicemeeter driver prefix (e.g. "WDM: ") and device index (e.g. "2- ")
-                let mut base = a1.as_str();
-                if let Some(colon) = base.find(": ") {
-                    let pfx = &base[..colon];
-                    if DRIVER_PREFIXES.contains(&pfx) {
-                        base = base[colon + 2..].trim();
-                    }
-                }
-                if let Some(dash) = base.find("- ") {
-                    let pfx = &base[..dash];
-                    if !pfx.is_empty() && pfx.chars().all(|c| c.is_ascii_digit()) {
-                        base = base[dash + 2..].trim();
-                    }
-                }
-                if !base.is_empty() && base != "-" {
-                    println!("[*] Filtering trigger on device: '{}'", base);
-                    device_name = Some(base.to_string());
+                let cleaned = clean_device_name(&a1);
+                if !cleaned.is_empty() && cleaned != "-" {
+                    println!("[*] Filtering trigger on device: '{}'", cleaned);
+                    device_name = Some(cleaned);
                 } else {
                     println!(
-                        "[!] Warning: Device name was empty after stripping prefixes. Installing wildcard trigger."
+                        "[!] Warning: Device name was empty after cleaning. Installing wildcard trigger."
                     );
                 }
             }
@@ -663,12 +531,6 @@ fn handle_status(args: &[String]) {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-
-    if args.iter().any(|a| a == "--silent") {
-        unsafe {
-            FreeConsole();
-        }
-    }
 
     if args.is_empty() {
         handle_restart(&[]);

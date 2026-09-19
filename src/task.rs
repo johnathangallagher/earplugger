@@ -137,6 +137,131 @@ pub fn format_xpath_string_literal(s: &str) -> Result<String, String> {
     }
 }
 
+pub const DRIVER_PREFIXES: &[&str] = &["WDM", "MME", "KS", "ASIO", "DirectSound"];
+
+pub const ENDPOINT_ROLES: &[&str] = &[
+    "speakers",
+    "headphones",
+    "headset",
+    "headset earphone",
+    "earphone",
+    "lautsprecher",
+    "kopfhörer",
+    "altavoces",
+    "auriculares",
+    "écouteurs",
+    "enceintes",
+    "haut-parleurs",
+    "casque",
+    "microphone",
+    "line in",
+    "line out",
+    "digital audio",
+    "digital output",
+    "audio out",
+    "スピーカー",
+    "ヘッドフォン",
+    "ヘッドセット",
+    "扬声器",
+    "耳机",
+    "스피커",
+    "헤드폰",
+    "헤드셋",
+];
+
+pub fn clean_device_name(raw: &str) -> String {
+    let mut s = raw.trim();
+
+    // Strip driver type prefix if present (e.g. "WDM: ", "MME: ", "KS: ", "ASIO: ", "DirectSound: ").
+    // Only strip prefixes that exactly match known Voicemeeter driver type names to avoid false
+    // positives on device names like "Focusrite: Line In" or "USB_Audio: Output".
+    if let Some(colon_idx) = s.find(": ") {
+        let prefix = &s[..colon_idx];
+        if DRIVER_PREFIXES.contains(&prefix) {
+            s = s[colon_idx + 2..].trim();
+        }
+    }
+
+    // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first,
+    // as well as non-hardware trailing qualifiers like " (Loopback)" or " (Enhanced)".
+    const TRAILING_QUALIFIERS: &[&str] = &[
+        "loopback",
+        "enhanced",
+        "echo cancelling",
+        "echo-cancelling",
+        "default device",
+    ];
+
+    while s.ends_with(')') {
+        if let Some(last_paren) = s.rfind(" (") {
+            let inner = s[last_paren + 2..s.len() - 1].trim();
+            if !inner.is_empty()
+                && (inner.chars().all(|c| c.is_ascii_digit())
+                    || TRAILING_QUALIFIERS
+                        .iter()
+                        .any(|&q| inner.eq_ignore_ascii_case(q)))
+            {
+                s = s[..last_paren].trim();
+                continue;
+            }
+        }
+        break;
+    }
+
+    // Windows endpoint friendly names across all languages are formatted as:
+    // "<Endpoint Role> (<Hardware Description>)"
+    // e.g., "Speakers (Realtek(R) Audio)", "Lautsprecher (RODE NT-USB)", "Altavoces (USB Audio)"
+    // Hardware descriptions can contain nested parentheticals (e.g. "Speakers (Realtek High Definition Audio (SST))").
+    // Walk backwards from the terminal ')' matching opening '(' by depth to accurately
+    // extract the complete hardware description without truncating nested qualifiers.
+    // Ensure the prefix matches an endpoint role before stripping to avoid discarding
+    // hardware names that end in parentheticals (e.g. "Realtek High Definition Audio (SST)").
+    if s.ends_with(')') {
+        let mut depth = 0;
+        let mut match_pos = None;
+        for (idx, ch) in s.char_indices().rev() {
+            if ch == ')' {
+                depth += 1;
+            } else if ch == '(' {
+                depth -= 1;
+                if depth == 0 {
+                    if idx > 0 && s.as_bytes()[idx - 1] == b' ' {
+                        match_pos = Some(idx);
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(open_idx) = match_pos {
+            let role = s[..open_idx].trim();
+            let base_role = role.split('(').next().unwrap_or("").trim();
+            let base_lower = base_role.to_lowercase();
+            let is_role = ENDPOINT_ROLES.iter().any(|&r| {
+                role.eq_ignore_ascii_case(r)
+                    || base_lower == *r
+                    || (base_lower.ends_with(r)
+                        && base_lower[..base_lower.len() - r.len()].ends_with(' '))
+            });
+            if is_role {
+                let inner = s[open_idx + 1..s.len() - 1].trim();
+                if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
+                    s = inner;
+                }
+            }
+        }
+    }
+
+    // Strip leading Windows device endpoint indices like "2- RODE NT-USB"
+    if let Some(dash_idx) = s.find("- ") {
+        let prefix = &s[..dash_idx];
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+            s = s[dash_idx + 2..].trim();
+        }
+    }
+
+    s.to_string()
+}
+
 pub fn generate_task_xml(
     exe_path: &str,
     device_filter: Option<&str>,
@@ -147,29 +272,26 @@ pub fn generate_task_xml(
         Some(dev) => {
             let trimmed = dev.trim();
             let mut variants = Vec::new();
-            variants.push(trimmed);
+            variants.push(trimmed.to_string());
 
             // If the filter contains a parenthetical friendly name format (e.g. "Speakers (RODE NT-USB)"),
             // also include the extracted hardware description ("RODE NT-USB") in an OR clause.
-            // This guarantees matching whether Windows MMDevAPI logs the endpoint friendly name or hardware name.
-            if let Some(open) = trimmed.find(" (") {
-                if trimmed.ends_with(')') {
-                    let inner = trimmed[open + 2..trimmed.len() - 1].trim();
-                    if !inner.is_empty() && inner != trimmed {
-                        variants.push(inner);
-                    }
-                }
+            // Using clean_device_name guarantees robust extraction without corrupting multi-parenthetical
+            // device names like "Speakers (RODE NT-USB) (1)".
+            let cleaned = clean_device_name(trimmed);
+            if !cleaned.is_empty() && cleaned != trimmed {
+                variants.push(cleaned);
             }
 
             if variants.len() == 1 {
-                let formatted = format_xpath_string_literal(variants[0])?;
+                let formatted = format_xpath_string_literal(&variants[0])?;
                 format!(
                     " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
                     formatted
                 )
             } else {
-                let f0 = format_xpath_string_literal(variants[0])?;
-                let f1 = format_xpath_string_literal(variants[1])?;
+                let f0 = format_xpath_string_literal(&variants[0])?;
+                let f1 = format_xpath_string_literal(&variants[1])?;
                 format!(
                     " and *[EventData[(Data[@Name='DeviceName']={} or Data[@Name='DeviceName']={}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
                     f0, f1
@@ -392,6 +514,7 @@ pub fn install_task(
 }
 
 pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
+    let task_file = get_system32_path(&format!("Tasks\\{}", TASK_NAME));
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
         .args(["/delete", "/tn", TASK_NAME, "/f"])
@@ -402,14 +525,16 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         let err = decode_process_output(&output.stderr);
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
-        let is_permission_or_rpc = msg.contains("0x80070005")
-            || msg.to_ascii_lowercase().contains("access is denied")
-            || msg.contains("0x800706BA")
-            || msg.to_ascii_lowercase().contains("rpc");
-        if is_permission_or_rpc {
-            Some(format!("schtasks delete failed: {}", msg))
-        } else {
+
+        let not_found = !task_file.is_file()
+            || msg.contains("0x80070002")
+            || msg.to_ascii_lowercase().contains("cannot find")
+            || msg.to_ascii_lowercase().contains("not find");
+
+        if not_found {
             None
+        } else {
+            Some(format!("schtasks delete failed: {}", msg))
         }
     } else {
         None
@@ -431,6 +556,24 @@ pub struct TaskStatusDetails {
     pub xml_raw: String,
 }
 
+fn find_tag_open(haystack: &str, tag_name: &str) -> Option<usize> {
+    let mut offset = 0;
+    while let Some(pos) = haystack[offset..].find(tag_name) {
+        let idx = offset + pos;
+        let after = idx + tag_name.len();
+        if after < haystack.len() {
+            let ch = haystack.as_bytes()[after];
+            if ch == b'>' || ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n' || ch == b'/' {
+                return Some(idx);
+            }
+        } else {
+            return Some(idx);
+        }
+        offset = idx + 1;
+    }
+    None
+}
+
 pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     // schtasks /query /xml outputs UTF-16 LE with a BOM on Windows. Detect the BOM and
     // decode accordingly. If no BOM is present, treat as UTF-8 (future-proofs against Wine
@@ -446,9 +589,10 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     };
 
     // Extract <Settings> block to check task-level enabled status.
-    // Use relative indexing and bounds guards to prevent slicing panics on malformed XML.
+    // Use relative indexing, tag boundary checking, and bounds guards to support
+    // attribute-bearing tags (e.g. <Settings xmlns="...">) without slicing panics.
     let lower_xml = xml.to_ascii_lowercase();
-    let settings_block = if let Some(start) = lower_xml.find("<settings>") {
+    let settings_block = if let Some(start) = find_tag_open(&lower_xml, "<settings") {
         if let Some(end_offset) = lower_xml[start..].find("</settings>") {
             &xml[start..start + end_offset]
         } else {
@@ -458,12 +602,17 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         &xml[..]
     };
 
-    // Case-insensitive check for disabled state, ignoring whitespace variations inside <Enabled>...</Enabled>
+    // Case-insensitive check for disabled state, ignoring whitespace variations and attributes inside <Enabled>...</Enabled>
     let lower_settings = settings_block.to_ascii_lowercase();
-    let settings_enabled = if let Some(e_start) = lower_settings.find("<enabled>") {
-        if let Some(e_end) = lower_settings[e_start + 9..].find("</enabled>") {
-            let val = lower_settings[e_start + 9..e_start + 9 + e_end].trim();
-            val != "false" && val != "0"
+    let settings_enabled = if let Some(e_start) = find_tag_open(&lower_settings, "<enabled") {
+        if let Some(tag_close) = lower_settings[e_start..].find('>') {
+            let content_start = e_start + tag_close + 1;
+            if let Some(e_end) = lower_settings[content_start..].find("</enabled>") {
+                let val = lower_settings[content_start..content_start + e_end].trim();
+                val != "false" && val != "0"
+            } else {
+                true
+            }
         } else {
             true
         }
@@ -472,13 +621,18 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     };
 
     // Also check trigger-level <Enabled> tag inside <EventTrigger>
-    let trigger_enabled = if let Some(t_start) = lower_xml.find("<eventtrigger>") {
+    let trigger_enabled = if let Some(t_start) = find_tag_open(&lower_xml, "<eventtrigger") {
         if let Some(t_end) = lower_xml[t_start..].find("</eventtrigger>") {
             let trigger_block = &lower_xml[t_start..t_start + t_end];
-            if let Some(e_start) = trigger_block.find("<enabled>") {
-                if let Some(e_end) = trigger_block[e_start + 9..].find("</enabled>") {
-                    let val = trigger_block[e_start + 9..e_start + 9 + e_end].trim();
-                    val != "false" && val != "0"
+            if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
+                if let Some(tag_close) = trigger_block[e_start..].find('>') {
+                    let content_start = e_start + tag_close + 1;
+                    if let Some(e_end) = trigger_block[content_start..].find("</enabled>") {
+                        let val = trigger_block[content_start..content_start + e_end].trim();
+                        val != "false" && val != "0"
+                    } else {
+                        true
+                    }
                 } else {
                     true
                 }
@@ -501,6 +655,14 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 }
 
 pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
+    let task_file = get_system32_path(&format!("Tasks\\{}", TASK_NAME));
+
+    // Fast-path: If the task file is definitely absent from %SystemRoot%\System32\Tasks,
+    // the task is not registered on the system.
+    if matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(None);
+    }
+
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
         .args(["/query", "/tn", TASK_NAME, "/xml"])
@@ -512,16 +674,16 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
 
-        let is_permission_or_rpc = combined.contains("0x80070005")
-            || combined.to_ascii_lowercase().contains("access is denied")
-            || combined.contains("0x800706BA")
-            || combined.to_ascii_lowercase().contains("rpc");
+        let not_found = !task_file.is_file()
+            || combined.contains("0x80070002")
+            || combined.to_ascii_lowercase().contains("cannot find")
+            || combined.to_ascii_lowercase().contains("not find");
 
-        if is_permission_or_rpc {
-            return Err(format!("Query failed (schtasks: {})", combined));
+        if not_found {
+            return Ok(None);
         }
 
-        return Ok(None);
+        return Err(format!("Query failed (schtasks: {})", combined));
     }
 
     Ok(Some(parse_task_xml_status(&output.stdout)))
@@ -603,6 +765,49 @@ mod tests {
         assert!(xml.contains(
             "(Data[@Name=&apos;DeviceName&apos;]=&apos;Speakers (RODE NT-USB)&apos; or Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;)"
         ));
+    }
+
+    #[test]
+    fn test_generate_task_xml_multi_parenthetical_friendly_name() {
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("Speakers (RODE NT-USB) (1)"),
+            150,
+            None,
+        )
+        .unwrap();
+        // Suffix "(1)" must be cleanly stripped when generating hardware name
+        assert!(xml.contains(
+            "(Data[@Name=&apos;DeviceName&apos;]=&apos;Speakers (RODE NT-USB) (1)&apos; or Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;)"
+        ));
+
+        let xml2 = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("Kopfhörer (Dynamisch) (RODE NT-USB)"),
+            150,
+            None,
+        )
+        .unwrap();
+        assert!(xml2.contains(
+            "(Data[@Name=&apos;DeviceName&apos;]=&apos;Kopfhörer (Dynamisch) (RODE NT-USB)&apos; or Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;)"
+        ));
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_with_attributes() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <EventTrigger id="Trigger1">
+      <Enabled>false</Enabled>
+    </EventTrigger>
+  </Triggers>
+  <Settings xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+    <Enabled>true</Enabled>
+  </Settings>
+</Task>"#;
+        let status = parse_task_xml_status(xml.as_bytes());
+        assert!(!status.is_enabled);
     }
 
     #[test]

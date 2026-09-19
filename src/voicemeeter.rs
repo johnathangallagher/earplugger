@@ -137,6 +137,18 @@ fn parse_uninstall_string_dir(raw: &str) -> Option<PathBuf> {
     exe_path.parent().map(|p| p.to_path_buf())
 }
 
+struct RegKeyGuard(*mut c_void);
+
+impl Drop for RegKeyGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                RegCloseKey(self.0);
+            }
+        }
+    }
+}
+
 fn query_registry_uninstall_dir() -> Option<PathBuf> {
     let subkeys = [
         // Voicemeeter Banana
@@ -168,6 +180,7 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                 )
             };
             if status == 0 && !hkey.is_null() {
+                let _guard = RegKeyGuard(hkey);
                 for (val_idx, val_name) in val_names.iter().enumerate() {
                     // Use Vec<u16> to ensure proper 2-byte alignment for wide string deserialization
                     let mut buf = vec![0u16; 512];
@@ -280,18 +293,12 @@ fn query_registry_uninstall_dir() -> Option<PathBuf> {
                             // DLL preloading/hijacking (CWE-426) if run from an untrusted working directory.
                             if dir.is_absolute() {
                                 let candidate_dll = dir.join(DLL_NAME);
-                                if candidate_dll.is_absolute() && candidate_dll.exists() {
-                                    unsafe {
-                                        RegCloseKey(hkey);
-                                    }
+                                if candidate_dll.is_absolute() && candidate_dll.is_file() {
                                     return Some(candidate_dll);
                                 }
                             }
                         }
                     }
-                }
-                unsafe {
-                    RegCloseKey(hkey);
                 }
             }
         }
@@ -340,7 +347,7 @@ pub fn find_voicemeeter_dll() -> Option<PathBuf> {
     // undefined behavior and risk DLL hijacking (CWE-426) if run from an untrusted working directory.
     search_paths
         .into_iter()
-        .find(|p| p.is_absolute() && p.exists())
+        .find(|p| p.is_absolute() && p.is_file())
 }
 
 // eq_ignore_ascii_case_wide_str compares a NUL-excluded wide string slice against an ASCII &str.
@@ -598,12 +605,24 @@ mod tests {
     #[test]
     fn test_find_voicemeeter_dll_returns_path_if_installed() {
         if let Some(path) = find_voicemeeter_dll() {
-            assert!(path.exists());
-            assert!(path.to_string_lossy().ends_with(".dll"));
+            assert!(path.is_file());
+            assert!(
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".dll")
+            );
             #[cfg(target_pointer_width = "64")]
-            assert!(path.to_string_lossy().ends_with("VoicemeeterRemote64.dll"));
+            assert!(
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with("voicemeeterremote64.dll")
+            );
             #[cfg(target_pointer_width = "32")]
-            assert!(path.to_string_lossy().ends_with("VoicemeeterRemote.dll"));
+            assert!(
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with("voicemeeterremote.dll")
+            );
         }
     }
 
