@@ -28,11 +28,13 @@ Device names can contain single quotes or apostrophes (for example: `User's AirP
 
 Strings containing both single and double quotes are rejected during CLI validation because `wevtapi.dll` does not support escaping quotes or `concat()` within event subscription queries.
 
+When an endpoint friendly name contains parenthetical roles (for example: `Speakers (RODE NT-USB)`), `earplugger` generates an `or` clause matching both the full friendly name and the underlying hardware description (`(Data[@Name='DeviceName']='Speakers (RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB')`), guaranteeing trigger activation regardless of whether Windows MMDevAPI logs the endpoint friendly name or the hardware adapter name in Event 65.
+
 Control characters (`< 0x20`) are stripped to preserve XML parser validity.
 
 ## Task Settings & Queuing
-- **MultipleInstancesPolicy**: `Queue`
-  Queues follow-up reconnect signals if multiple consecutive endpoint reconnect signals fire (e.g. capture endpoint arriving followed by master DAC clock 150ms later). This ensures subsequent device arrivals during the post-restart hold trigger a resynchronization rather than being dropped.
+- **MultipleInstancesPolicy**: `IgnoreNew`
+  Ensures that if multiple consecutive endpoint reconnect signals fire (e.g. render and capture endpoints registering simultaneously upon KVM toggle), the in-flight run handles the restart after its settle delay while secondary triggers are dropped, eliminating restart storms.
 - **ExecutionTimeLimit**: Dynamically scaled based on `--delay-ms` (`PT30S` minimum for default 150ms delay, scaling up to `PT60S` for 30s delays to allow the full settle delay and Voicemeeter restart sequence to complete before termination).
 - **DisallowStartIfOnBatteries**: `false` (operates normally on laptops).
 - **RunLevel**: `LeastPrivilege` (runs under user logon context without elevated tokens).

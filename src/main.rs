@@ -33,6 +33,7 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
+    fn FreeConsole() -> i32;
 }
 
 pub fn is_user_admin() -> bool {
@@ -449,26 +450,46 @@ fn handle_install(args: &[String]) {
         std::process::exit(1);
     }
 
-    // Use user-specified device name verbatim if provided.
-    // clean_device_name is ONLY applied to auto-detected Voicemeeter A1 names.
-    let mut device_name = opts.device;
+    let explicit_wildcard = matches!(
+        opts.device.as_deref(),
+        Some("*") | Some("any") | Some("all") | Some("-")
+    );
+
+    let mut device_name = if explicit_wildcard {
+        println!(
+            "[*] Explicit wildcard filter requested. Installing wildcard trigger for any active audio endpoint."
+        );
+        None
+    } else {
+        opts.device
+    };
+
     if let Some(ref d) = device_name {
-        if d.is_empty() || d == "-" {
-            device_name = None;
-        } else {
-            println!("[*] Filtering trigger on device: '{}'", d);
-        }
+        println!("[*] Filtering trigger on device: '{}'", d);
     }
 
-    // If device not specified, try to auto-detect from active Voicemeeter A1
-    if device_name.is_none() {
+    // If device not specified and not an explicit wildcard request, try to auto-detect from active Voicemeeter A1
+    if !explicit_wildcard && device_name.is_none() {
         match voicemeeter::get_a1_device_name() {
             Ok(a1) if !a1.is_empty() && a1 != "-" => {
                 println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
-                let cleaned = clean_device_name(&a1);
-                if !cleaned.is_empty() && cleaned != "-" {
-                    println!("[*] Filtering trigger on device: '{}'", cleaned);
-                    device_name = Some(cleaned);
+                // Strip Voicemeeter driver prefix (e.g. "WDM: ") and device index (e.g. "2- ")
+                let mut base = a1.as_str();
+                if let Some(colon) = base.find(": ") {
+                    let pfx = &base[..colon];
+                    if DRIVER_PREFIXES.contains(&pfx) {
+                        base = base[colon + 2..].trim();
+                    }
+                }
+                if let Some(dash) = base.find("- ") {
+                    let pfx = &base[..dash];
+                    if !pfx.is_empty() && pfx.chars().all(|c| c.is_ascii_digit()) {
+                        base = base[dash + 2..].trim();
+                    }
+                }
+                if !base.is_empty() && base != "-" {
+                    println!("[*] Filtering trigger on device: '{}'", base);
+                    device_name = Some(base.to_string());
                 } else {
                     println!(
                         "[!] Warning: Device name was empty after stripping prefixes. Installing wildcard trigger."
@@ -642,6 +663,12 @@ fn handle_status(args: &[String]) {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "--silent") {
+        unsafe {
+            FreeConsole();
+        }
+    }
 
     if args.is_empty() {
         handle_restart(&[]);

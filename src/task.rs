@@ -90,7 +90,7 @@ fn get_system32_path(binary: &str) -> PathBuf {
         // On a native 32-bit OS, Sysnative does not exist and we fall through to sys_dir.
         if let Some(parent) = sys_dir.parent() {
             let sysnative_dir = parent.join("Sysnative");
-            if sysnative_dir.is_dir() {
+            if sysnative_dir.join("cmd.exe").is_file() {
                 return sysnative_dir.join(binary);
             }
         }
@@ -145,11 +145,36 @@ pub fn generate_task_xml(
 ) -> Result<String, String> {
     let filter_clause = match device_filter {
         Some(dev) => {
-            let formatted_literal = format_xpath_string_literal(dev)?;
-            format!(
-                " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
-                formatted_literal
-            )
+            let trimmed = dev.trim();
+            let mut variants = Vec::new();
+            variants.push(trimmed);
+
+            // If the filter contains a parenthetical friendly name format (e.g. "Speakers (RODE NT-USB)"),
+            // also include the extracted hardware description ("RODE NT-USB") in an OR clause.
+            // This guarantees matching whether Windows MMDevAPI logs the endpoint friendly name or hardware name.
+            if let Some(open) = trimmed.find(" (") {
+                if trimmed.ends_with(')') {
+                    let inner = trimmed[open + 2..trimmed.len() - 1].trim();
+                    if !inner.is_empty() && inner != trimmed {
+                        variants.push(inner);
+                    }
+                }
+            }
+
+            if variants.len() == 1 {
+                let formatted = format_xpath_string_literal(variants[0])?;
+                format!(
+                    " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    formatted
+                )
+            } else {
+                let f0 = format_xpath_string_literal(variants[0])?;
+                let f1 = format_xpath_string_literal(variants[1])?;
+                format!(
+                    " and *[EventData[(Data[@Name='DeviceName']={} or Data[@Name='DeviceName']={}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    f0, f1
+                )
+            }
         }
         None => {
             " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
@@ -181,19 +206,7 @@ pub fn generate_task_xml(
                 String::new()
             }
         }
-        None => {
-            if let Ok(u) = env::var("USERNAME") {
-                let trimmed = u.trim();
-                let escaped = xml_escape(trimmed);
-                if !escaped.is_empty() {
-                    format!("\n      <UserId>{}</UserId>", escaped)
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        }
+        None => String::new(),
     };
 
     // Scale ExecutionTimeLimit to accommodate the configured delay plus a 30-second buffer.
@@ -223,7 +236,7 @@ pub fn generate_task_xml(
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -389,13 +402,14 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         let err = decode_process_output(&output.stderr);
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
-        let not_found = msg.contains("0x80070002")
-            || msg.to_ascii_lowercase().contains("cannot find")
-            || msg.to_ascii_lowercase().contains("not find");
-        if not_found {
-            None
-        } else {
+        let is_permission_or_rpc = msg.contains("0x80070005")
+            || msg.to_ascii_lowercase().contains("access is denied")
+            || msg.contains("0x800706BA")
+            || msg.to_ascii_lowercase().contains("rpc");
+        if is_permission_or_rpc {
             Some(format!("schtasks delete failed: {}", msg))
+        } else {
+            None
         }
     } else {
         None
@@ -487,7 +501,6 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 }
 
 pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
-    let task_file = get_system32_path(&format!("Tasks\\{}", TASK_NAME));
     let schtasks = get_system32_path("schtasks.exe");
     let output = Command::new(schtasks)
         .args(["/query", "/tn", TASK_NAME, "/xml"])
@@ -499,22 +512,16 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
 
-        // Detect non-registered task status reliably:
-        // 1. If elevated (or with filesystem read rights), check if task file is missing on disk.
-        // 2. If unelevated (where C:\Windows\System32\Tasks may return PermissionDenied), check
-        //    if schtasks returned code 1 with "cannot find the file specified" (0x80070002) or empty output.
-        let file_missing =
-            matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-        let output_missing = combined.contains("0x80070002")
-            || combined.to_ascii_lowercase().contains("cannot find")
-            || combined.to_ascii_lowercase().contains("not find")
-            || combined.is_empty();
+        let is_permission_or_rpc = combined.contains("0x80070005")
+            || combined.to_ascii_lowercase().contains("access is denied")
+            || combined.contains("0x800706BA")
+            || combined.to_ascii_lowercase().contains("rpc");
 
-        if file_missing || output_missing {
-            return Ok(None);
+        if is_permission_or_rpc {
+            return Err(format!("Query failed (schtasks: {})", combined));
         }
 
-        return Err(format!("Query failed (schtasks: {})", combined));
+        return Ok(None);
     }
 
     Ok(Some(parse_task_xml_status(&output.stdout)))
@@ -574,11 +581,34 @@ mod tests {
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
-        assert!(xml.contains("<MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
         assert!(xml.contains("<ExecutionTimeLimit>PT30S</ExecutionTimeLimit>"));
+        // When user is None, UserId must NOT be emitted
+        assert!(!xml.contains("<UserId>"));
+    }
+
+    #[test]
+    fn test_generate_task_xml_dual_device_name_clause() {
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("Speakers (RODE NT-USB)"),
+            150,
+            None,
+        )
+        .unwrap();
+        // Must match both friendly name and extracted hardware name
+        assert!(xml.contains(
+            "(Data[@Name=&apos;DeviceName&apos;]=&apos;Speakers (RODE NT-USB)&apos; or Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;)"
+        ));
+    }
+
+    #[test]
+    fn test_get_system32_path_resolves_executable() {
+        let cmd = get_system32_path("cmd.exe");
+        assert!(cmd.is_file());
     }
 
     #[test]

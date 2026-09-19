@@ -11,12 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Streamlined `install.bat` and `uninstall.bat` to forward command-line arguments `%*` directly to `earplugger.exe` with `DisableDelayedExpansion`, eliminating batch argument splitting, delayed expansion exclamation mark stripping, quote stripping syntax errors, and numeric validation bypasses.
 - Explicitly rejected device names containing both single and double quotes in `parse_options` and `format_xpath_string_literal` with actionable error diagnostics, preventing dead Task Scheduler triggers since Windows Event Log XPath does not support escaped quotes or `concat()`.
-- Switched Task Scheduler `<MultipleInstancesPolicy>` from `IgnoreNew` to `Queue`, ensuring secondary endpoint arrivals during composite USB device reconnects trigger follow-up resynchronizations.
-- Bound task principal `<UserId>` to the interactive user via `USERNAME` environment variable fallback when `--user` is not explicitly provided during elevated installation.
+- Maintained Task Scheduler `<MultipleInstancesPolicy>` as `IgnoreNew` to debounce composite USB device re-enumeration storms and prevent concurrent Voicemeeter restart race conditions.
+- Omitted `<UserId>` when `--user` is unspecified, allowing Task Scheduler `<LogonType>InteractiveToken</LogonType>` to dynamically bind to whichever user is interactively logged in rather than the elevated Administrator account.
+- Invoked Win32 `FreeConsole()` at process start when `--silent` is passed, eliminating the transient 300ms console window popup when triggered by Task Scheduler on KVM switch.
+- Added dual-clause XPath matching for parenthetical device friendly names (e.g. `(Data[@Name='DeviceName']='Speakers (RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB')`), guaranteeing trigger matching whether Windows MMDevAPI logs the endpoint friendly name or hardware adapter description in Event 65.
+- Made `query_task_status` and `uninstall_task` language-independent by inspecting for specific Win32 error codes (`0x80070005`, `0x800706BA`) rather than localized English strings.
+- Fixed 32-bit `Sysnative` redirector bypass in `get_system32_path` by testing executable file existence (`sysnative_dir.join("cmd.exe").is_file()`) instead of directory status on the virtual alias.
+- Added explicit wildcard trigger support via `--device "*"` / `--device "any"` / `--device "all"` / `--device "-"`, allowing users to deliberately bypass auto-detection when Voicemeeter is active.
+- Hardened `uninstall.bat` fallback path when `earplugger.exe` is absent: discarded `schtasks /delete` output, treated missing task as non-fatal, and scanned `%*` for `--disable-channel` anywhere in arguments.
 - Hardened `install_task` temporary XML file allocation by binding `TempFileGuard` immediately upon file creation, preventing leaked temporary files in `%TEMP%` if `write_all` or `flush` fails.
 - Hardened `uninstall_task` to treat missing task deletions as non-fatal, ensuring event channel disablement (`--disable-channel`) executes cleanly even if the task was already deleted.
-- Hardened `get_system32_path` on 32-bit builds by checking whether the virtual `Sysnative` directory exists rather than destination file existence, ensuring non-existent file queries resolve to 64-bit `System32` rather than redirected `SysWOW64`.
-- Hardened `query_task_status` against unelevated execution failures where `C:\Windows\System32\Tasks` directory DACL returns `PermissionDenied`, inspecting `schtasks` stderr/stdout for missing task indicators (`0x80070002` / `cannot find the file specified`) to reliably report uninstalled state across all user privilege levels.
 - Re-initialized `entry.dwSize` before `Process32NextW` inside the Voicemeeter process enumeration loop per Win32 Toolhelp32 specifications.
 - Removed ambiguous `"micro"` shorthand from `ENDPOINT_ROLES` and implemented exact phrase and word-boundary token matching, preventing false-positive stripping of device names starting with "micro" or brand names containing role words.
 - Replaced `.to_str()` requirement on temporary XML file path with direct `&OsStr` argument passing to `schtasks.exe`, supporting arbitrary non-UTF-8 temporary directory paths.
@@ -46,13 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `VBVMR_Login` to call `VBVMR_Logout` unconditionally on any non-zero return code.
 - Fixed `parse_uninstall_string_dir` to use ASCII-safe `.exe` byte search, eliminating `to_lowercase()` index panic vectors.
 - Fixed `get_system32_path` to dynamically retry `GetSystemDirectoryW` on buffer truncation.
-- Replaced `.to_string_lossy()` with `.to_str()` for temporary XML paths.
-- Added ASCII control character validation in `parse_options` for `--device` and `--user`.
 - Delegated direct flag invocations (e.g. `earplugger --silent`) to the default `restart` command in `main()`.
 - Separated release packaging from release publication in `.github/workflows/release.yml` with a downstream `publish` job, eliminating concurrent release publishing race conditions.
 - Updated `docs/wiki/Task-Scheduler-Internals.md` to reflect `PT30S` `ExecutionTimeLimit`.
 - Updated `SECURITY.md` supported versions table to `1.3.x`.
-- Added `cargo audit` job to `.github/workflows/security.yml`.
 
 ## [1.2.0] - 2026-09-18
 

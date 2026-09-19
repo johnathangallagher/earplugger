@@ -22,20 +22,16 @@ if exist "%~dp0earplugger.exe" (
     set "EXE_PATH=%~dp0target\release\earplugger.exe"
 ) else (
     echo [*] Binary not found. Removing scheduled task directly via schtasks...
-    "%SystemRoot%\System32\schtasks.exe" /delete /tn "Earplugger_AutoRestart" /f
-    set "SCHTASKS_ERR=%ERRORLEVEL%"
-    if "%~1"=="--disable-channel" (
+    "%SystemRoot%\System32\schtasks.exe" /delete /tn "Earplugger_AutoRestart" /f >nul 2>&1
+    rem Check if --disable-channel was passed anywhere in arguments
+    echo %* | findstr /i /c:"--disable-channel" >nul 2>&1
+    if not errorlevel 1 (
         "%SystemRoot%\System32\wevtutil.exe" sl "Microsoft-Windows-Audio/Operational" /e:false
         if errorlevel 1 (
             echo [-] Failed to disable Microsoft-Windows-Audio/Operational channel.
             pause
             exit /b 1
         )
-    )
-    if %SCHTASKS_ERR% NEQ 0 (
-        echo [-] Uninstallation failed or task was not found.
-        pause
-        exit /b %SCHTASKS_ERR%
     )
     goto finish
 )
