@@ -96,13 +96,13 @@ earplugger.exe install
 * `earplugger` will automatically detect your currently running Voicemeeter engine and active **Hardware A1 device**.
 * It enables the `Microsoft-Windows-Audio/Operational` event log channel and registers the Windows Task Scheduler event trigger.
 
-Alternatively, if using the release ZIP package, you can simply right-click `install.bat` and select **Run as administrator**.
+Alternatively, if using the release ZIP package, you can simply right-click `src\install.bat` and select **Run as administrator**.
 
 To specify a custom device name, target user, or custom settling delay:
 ```powershell
 earplugger.exe install --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
 # Or via batch script:
-install.bat --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
+src\install.bat --device "RODE NT-USB" --delay-ms 150 --user "DOMAIN\User"
 ```
 
 ### 3. Verify Status
@@ -155,13 +155,13 @@ To cleanly remove the Task Scheduler trigger:
 ```powershell
 earplugger.exe uninstall
 ```
-Or right-click `uninstall.bat` and select **Run as administrator**.
+Or right-click `src\uninstall.bat` and select **Run as administrator**.
 
 To also disable the Windows Audio Operational event channel:
 ```powershell
 earplugger.exe uninstall --disable-channel
 # Or via batch script:
-uninstall.bat --disable-channel
+src\uninstall.bat --disable-channel
 ```
 
 ---

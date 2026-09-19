@@ -8,27 +8,30 @@ if "%~1"=="/?" goto show_help
 net session >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Administrator privileges are required.
-    echo     Please right-click install.bat and select 'Run as administrator'.
+    echo     Please right-click %~nx0 and select 'Run as administrator'.
     pause
     exit /b 1
 )
 
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%~dp0earplugger.exe" (
-    set "EXE_PATH=%~dp0earplugger.exe"
-) else if exist "%~dp0target\release\earplugger.exe" (
-    set "EXE_PATH=%~dp0target\release\earplugger.exe"
+if exist "%SCRIPT_DIR%earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%earplugger.exe"
+) else if exist "%SCRIPT_DIR%..\earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe"
+) else if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
 ) else (
     echo [*] Release binary not found. Building via cargo...
+    cd /d "%SCRIPT_DIR%.."
     cargo build --release
     if errorlevel 1 (
         echo [!] Build failed. Please ensure Rust and cargo are installed.
         pause
         exit /b 1
     )
-    set "EXE_PATH=%~dp0target\release\earplugger.exe"
+    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
 )
 
 echo [*] Installing Task Scheduler trigger...
@@ -45,7 +48,7 @@ pause
 exit /b 0
 
 :show_help
-echo Usage: install.bat [OPTIONS]
+echo Usage: %~nx0 [OPTIONS]
 echo.
 echo Options:
 echo   --device "NAME"       Audio device name filter (e.g. "RODE NT-USB")

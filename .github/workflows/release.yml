@@ -37,13 +37,13 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $dist = "earplugger-$tag-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $dist
-          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination $dist/
-          Copy-Item install.bat -Destination $dist/
-          Copy-Item uninstall.bat -Destination $dist/
-          Copy-Item README.md -Destination $dist/
-          Copy-Item LICENSE -Destination $dist/
-          Copy-Item SECURITY.md -Destination $dist/
+          New-Item -ItemType Directory -Path "$dist/src"
+          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "$dist/"
+          Copy-Item "src/install.bat" -Destination "$dist/src/"
+          Copy-Item "src/uninstall.bat" -Destination "$dist/src/"
+          Copy-Item README.md -Destination "$dist/"
+          Copy-Item LICENSE -Destination "$dist/"
+          Copy-Item SECURITY.md -Destination "$dist/"
           Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip"
 
           New-Item -ItemType Directory -Path "upload"

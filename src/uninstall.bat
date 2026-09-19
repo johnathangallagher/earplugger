@@ -8,18 +8,20 @@ if "%~1"=="/?" goto show_help
 net session >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Administrator privileges are required.
-    echo     Please right-click uninstall.bat and select 'Run as administrator'.
+    echo     Please right-click %~nx0 and select 'Run as administrator'.
     pause
     exit /b 1
 )
 
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%~dp0earplugger.exe" (
-    set "EXE_PATH=%~dp0earplugger.exe"
-) else if exist "%~dp0target\release\earplugger.exe" (
-    set "EXE_PATH=%~dp0target\release\earplugger.exe"
+if exist "%SCRIPT_DIR%earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%earplugger.exe"
+) else if exist "%SCRIPT_DIR%..\earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe"
+) else if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (
+    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
 ) else (
     echo [*] Binary not found. Removing scheduled task directly via schtasks...
     "%SystemRoot%\System32\schtasks.exe" /delete /tn "Earplugger_AutoRestart" /f >nul 2>&1
@@ -63,7 +65,7 @@ pause
 exit /b 0
 
 :show_help
-echo Usage: uninstall.bat [OPTIONS]
+echo Usage: %~nx0 [OPTIONS]
 echo.
 echo Options:
 echo   --disable-channel   Also disable Microsoft-Windows-Audio/Operational event channel

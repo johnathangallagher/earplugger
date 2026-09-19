@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Relocated `install.bat` and `uninstall.bat` from repo root into `src/` (`src/install.bat` and `src/uninstall.bat`), keeping the repository root minimal and uncluttered.
+- Updated `src/install.bat` and `src/uninstall.bat` binary resolution to dynamically locate `earplugger.exe` across release distributions, root directories, and cargo target build directories.
+- Updated `.github/workflows/release.yml` to package `src/install.bat` and `src/uninstall.bat` within `src/` in release archives.
+- Optimized `.github/workflows/security.yml` dependency audit by installing prebuilt `cargo-audit` via `taiki-e/install-action@cargo-audit`, eliminating the ~3 minute compilation bottleneck from source.
+
 ## [1.3.0] - 2026-09-18
 
 ### Fixed
