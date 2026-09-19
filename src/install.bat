@@ -16,24 +16,21 @@ if %ERRORLEVEL% NEQ 0 (
 set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%SCRIPT_DIR%earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%earplugger.exe"
-) else if exist "%SCRIPT_DIR%..\earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe"
-) else if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
-) else (
-    echo [*] Release binary not found. Building via cargo...
-    cd /d "%SCRIPT_DIR%.."
-    cargo build --release
-    if errorlevel 1 (
-        echo [!] Build failed. Please ensure Rust and cargo are installed.
-        pause
-        exit /b 1
-    )
-    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
-)
+if exist "%SCRIPT_DIR%earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%..\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe
 
+echo [*] Release binary not found. Building via cargo...
+cd /d "%SCRIPT_DIR%.."
+cargo build --release
+if errorlevel 1 (
+    echo [!] Build failed. Please ensure Rust and cargo are installed.
+    pause
+    exit /b 1
+)
+set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
+
+:run_exe
 echo [*] Installing Task Scheduler trigger...
 "%EXE_PATH%" install %*
 set "EXIT_CODE=%ERRORLEVEL%"

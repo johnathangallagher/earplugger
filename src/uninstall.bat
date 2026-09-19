@@ -16,40 +16,39 @@ if %ERRORLEVEL% NEQ 0 (
 set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%SCRIPT_DIR%earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%earplugger.exe"
-) else if exist "%SCRIPT_DIR%..\earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe"
-) else if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (
-    set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe"
-) else (
-    echo [*] Binary not found. Removing scheduled task directly via schtasks...
-    "%SystemRoot%\System32\schtasks.exe" /delete /tn "Earplugger_AutoRestart" /f >nul 2>&1
-    set "SCHTASKS_ERR=%ERRORLEVEL%"
-    rem Check if --disable-channel was passed anywhere in arguments
-    set "DISABLE_CHANNEL=0"
+if exist "%SCRIPT_DIR%earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%..\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe
+
+:fallback_uninstall
+echo [*] Binary not found. Removing scheduled task directly via schtasks...
+"%SystemRoot%\System32\schtasks.exe" /delete /tn "Earplugger_AutoRestart" /f >nul 2>&1
+set "SCHTASKS_ERR=%ERRORLEVEL%"
+
+set "DISABLE_CHANNEL=0"
+if not "%~1"=="" (
     for %%A in (%*) do (
         if /i "%%~A"=="--disable-channel" set "DISABLE_CHANNEL=1"
     )
-    if "%DISABLE_CHANNEL%"=="1" (
-        "%SystemRoot%\System32\wevtutil.exe" sl "Microsoft-Windows-Audio/Operational" /e:false
-        if errorlevel 1 (
-            echo [-] Failed to disable Microsoft-Windows-Audio/Operational channel.
-            pause
-            exit /b 1
-        )
-    )
-    if %SCHTASKS_ERR% NEQ 0 (
-        rem If the task file still exists on disk, the deletion genuinely failed.
-        if exist "%SystemRoot%\System32\Tasks\Earplugger_AutoRestart" (
-            echo [-] Uninstallation failed. Could not remove scheduled task.
-            pause
-            exit /b %SCHTASKS_ERR%
-        )
-    )
-    goto finish
 )
+if "%DISABLE_CHANNEL%"=="1" (
+    "%SystemRoot%\System32\wevtutil.exe" sl "Microsoft-Windows-Audio/Operational" /e:false
+    if errorlevel 1 (
+        echo [-] Failed to disable Microsoft-Windows-Audio/Operational channel.
+        pause
+        exit /b 1
+    )
+)
+if %SCHTASKS_ERR% NEQ 0 (
+    if exist "%SystemRoot%\System32\Tasks\Earplugger_AutoRestart" (
+        echo [-] Uninstallation failed. Could not remove scheduled task.
+        pause
+        exit /b %SCHTASKS_ERR%
+    )
+)
+goto finish
 
+:run_exe
 echo [*] Removing Task Scheduler trigger...
 "%EXE_PATH%" uninstall %*
 set "EXIT_CODE=%ERRORLEVEL%"
