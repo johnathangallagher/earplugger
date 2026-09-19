@@ -34,7 +34,7 @@ jobs:
       - name: Build Release
         run: cargo build --target ${{ matrix.target }} --release --verbose
       - name: Upload Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: earplugger-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/earplugger.exe
