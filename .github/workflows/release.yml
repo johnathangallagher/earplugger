@@ -62,7 +62,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: build-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced permissive `!task_file.is_file()` checks in `query_task_status` and `uninstall_task` with explicit `io::ErrorKind::NotFound` matching.
 - Updated `.github/workflows/release.yml` to package `src/install.bat` and `src/uninstall.bat` within `src/` in release archives.
 - Optimized `.github/workflows/security.yml` dependency audit by installing prebuilt `cargo-audit` via `taiki-e/install-action@cargo-audit`, eliminating the ~3 minute compilation bottleneck from source.
+- Upgraded CodeQL actions to `v4` (`github/codeql-action/init@v4`, `github/codeql-action/analyze@v4`) and replaced `rustsec/audit-check` with native `cargo audit`, eliminating Node.js 20 and CodeQL Action v3 deprecation warnings.
+- Pinned Ubuntu runner images to `ubuntu-24.04` across CI/CD workflows, eliminating runner migration notices.
 - Streamlined `README.md` to provide direct, clean, and fluff-free setup and architectural documentation while preserving the project AI disclaimer banner.
 
 ## [1.3.0] - 2026-09-18
