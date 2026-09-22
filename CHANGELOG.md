@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added single-workflow release automation engine (`.github/scripts/release.py` and `workflow_dispatch` in `.github/workflows/release.yml`), enabling manual and automated releases with Conventional Commit changelog generation, SemVer version bumping, and zero bot PR churn.
+
 ### Changed
 - Relocated `install.bat` and `uninstall.bat` from repo root into `src/` (`src/install.bat` and `src/uninstall.bat`), keeping the repository root minimal and uncluttered.
 - Updated `src/install.bat` and `src/uninstall.bat` binary resolution to dynamically locate `earplugger.exe` across release distributions, root directories, and cargo target build directories.
