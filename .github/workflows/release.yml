@@ -1,6 +1,23 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "SemVer bump type (auto detects breaking/feat/fix from Conventional Commits)"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (simulate release notes & version bump without committing, tagging, or publishing)"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -9,8 +26,53 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Release & Generate Notes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.engine.outputs.tag }}
+      version: ${{ steps.engine.outputs.version }}
+      dry_run: ${{ steps.engine.outputs.dry_run }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run Release Engine
+        id: engine
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git config user.name "antigravity-runner[bot]"
+            git config user.email "antigravity-runner[bot]@users.noreply.github.com"
+            DRY_RUN_ARG=""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              DRY_RUN_ARG="--dry-run"
+            fi
+            python .github/scripts/release.py --bump "${{ inputs.bump }}" $DRY_RUN_ARG
+          else
+            python .github/scripts/release.py --current-tag "${{ github.ref_name }}"
+          fi
+
+      - name: Upload Release Notes
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+
   build-release:
     name: Build & Package Release (${{ matrix.target }})
+    needs: prepare
+    if: needs.prepare.outputs.dry_run != 'true'
     runs-on: windows-latest
     strategy:
       matrix:
@@ -20,6 +82,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,7 +100,7 @@ jobs:
       - name: Create Release Artifacts
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "${{ needs.prepare.outputs.tag }}"
           $dist = "earplugger-$tag-${{ matrix.target }}"
           New-Item -ItemType Directory -Path "$dist/src"
           Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "$dist/"
@@ -61,8 +126,11 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: build-release
+    needs: [prepare, build-release]
+    if: needs.prepare.outputs.dry_run != 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -73,5 +141,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: release-assets/*
-          generate_release_notes: true
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          body_path: release-assets/RELEASE_NOTES.md
+          files: |
+            release-assets/*.zip
+            release-assets/*.exe
