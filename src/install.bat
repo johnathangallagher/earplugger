@@ -16,9 +16,9 @@ if %ERRORLEVEL% NEQ 0 (
 set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%SCRIPT_DIR%earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe
-if exist "%SCRIPT_DIR%..\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe
-if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe)
+if exist "%SCRIPT_DIR%..\earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe)
+if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe)
 
 echo [*] Release binary not found. Building via cargo...
 cd /d "%SCRIPT_DIR%.."

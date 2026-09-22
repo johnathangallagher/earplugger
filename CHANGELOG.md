@@ -10,8 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Relocated `install.bat` and `uninstall.bat` from repo root into `src/` (`src/install.bat` and `src/uninstall.bat`), keeping the repository root minimal and uncluttered.
 - Updated `src/install.bat` and `src/uninstall.bat` binary resolution to dynamically locate `earplugger.exe` across release distributions, root directories, and cargo target build directories.
+- Grouped `if exist` commands in parentheses in `src/install.bat` and `src/uninstall.bat` to prevent unconditional execution of subsequent `goto run_exe`.
+- Hardened fallback argument parsing in `src/uninstall.bat` using iterative `shift` parsing.
+- Extracted `strip_driver_prefix` to preserve friendly names during Voicemeeter A1 auto-detection, enabling dual-clause XPath matching in generated task triggers.
+- Replaced permissive `!task_file.is_file()` checks in `query_task_status` and `uninstall_task` with explicit `io::ErrorKind::NotFound` matching.
 - Updated `.github/workflows/release.yml` to package `src/install.bat` and `src/uninstall.bat` within `src/` in release archives.
 - Optimized `.github/workflows/security.yml` dependency audit by installing prebuilt `cargo-audit` via `taiki-e/install-action@cargo-audit`, eliminating the ~3 minute compilation bottleneck from source.
+- Streamlined `README.md` to provide direct, clean, and fluff-free setup and architectural documentation while preserving the project AI disclaimer banner.
 
 ## [1.3.0] - 2026-09-18
 

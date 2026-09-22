@@ -354,13 +354,13 @@ fn handle_install(args: &[String]) {
         match voicemeeter::get_a1_device_name() {
             Ok(a1) if !a1.is_empty() && a1 != "-" => {
                 println!("[*] Auto-detected Voicemeeter A1 device: {}", a1);
-                let cleaned = clean_device_name(&a1);
-                if !cleaned.is_empty() && cleaned != "-" {
-                    println!("[*] Filtering trigger on device: '{}'", cleaned);
-                    device_name = Some(cleaned);
+                let stripped = task::strip_driver_prefix(&a1);
+                if !stripped.is_empty() && stripped != "-" {
+                    println!("[*] Filtering trigger on device: '{}'", stripped);
+                    device_name = Some(stripped.to_string());
                 } else {
                     println!(
-                        "[!] Warning: Device name was empty after cleaning. Installing wildcard trigger."
+                        "[!] Warning: Device name was empty after stripping driver prefix. Installing wildcard trigger."
                     );
                 }
             }
