@@ -16,9 +16,9 @@ if %ERRORLEVEL% NEQ 0 (
 set "SCRIPT_DIR=%~dp0"
 
 set "EXE_PATH="
-if exist "%SCRIPT_DIR%earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe
-if exist "%SCRIPT_DIR%..\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe
-if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe
+if exist "%SCRIPT_DIR%earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%earplugger.exe" & goto run_exe)
+if exist "%SCRIPT_DIR%..\earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%..\earplugger.exe" & goto run_exe)
+if exist "%SCRIPT_DIR%..\target\release\earplugger.exe" (set "EXE_PATH=%SCRIPT_DIR%..\target\release\earplugger.exe" & goto run_exe)
 
 :fallback_uninstall
 echo [*] Binary not found. Removing scheduled task directly via schtasks...
@@ -26,11 +26,12 @@ echo [*] Binary not found. Removing scheduled task directly via schtasks...
 set "SCHTASKS_ERR=%ERRORLEVEL%"
 
 set "DISABLE_CHANNEL=0"
-if not "%~1"=="" (
-    for %%A in (%*) do (
-        if /i "%%~A"=="--disable-channel" set "DISABLE_CHANNEL=1"
-    )
-)
+:parse_args
+if "%~1"=="" goto done_args
+if /i "%~1"=="--disable-channel" set "DISABLE_CHANNEL=1"
+shift
+goto parse_args
+:done_args
 if "%DISABLE_CHANNEL%"=="1" (
     "%SystemRoot%\System32\wevtutil.exe" sl "Microsoft-Windows-Audio/Operational" /e:false
     if errorlevel 1 (

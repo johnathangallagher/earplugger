@@ -169,18 +169,19 @@ pub const ENDPOINT_ROLES: &[&str] = &[
     "헤드셋",
 ];
 
-pub fn clean_device_name(raw: &str) -> String {
-    let mut s = raw.trim();
-
-    // Strip driver type prefix if present (e.g. "WDM: ", "MME: ", "KS: ", "ASIO: ", "DirectSound: ").
-    // Only strip prefixes that exactly match known Voicemeeter driver type names to avoid false
-    // positives on device names like "Focusrite: Line In" or "USB_Audio: Output".
+pub fn strip_driver_prefix(raw: &str) -> &str {
+    let s = raw.trim();
     if let Some(colon_idx) = s.find(": ") {
         let prefix = &s[..colon_idx];
         if DRIVER_PREFIXES.contains(&prefix) {
-            s = s[colon_idx + 2..].trim();
+            return s[colon_idx + 2..].trim();
         }
     }
+    s
+}
+
+pub fn clean_device_name(raw: &str) -> String {
+    let mut s = strip_driver_prefix(raw);
 
     // Strip trailing numeric instance parentheticals like " (1)" or " (2)" first,
     // as well as non-hardware trailing qualifiers like " (Loopback)" or " (Enhanced)".
@@ -526,7 +527,7 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = !task_file.is_file()
+        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || msg.contains("0x80070002")
             || msg.to_ascii_lowercase().contains("cannot find")
             || msg.to_ascii_lowercase().contains("not find");
@@ -674,7 +675,7 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = !task_file.is_file()
+        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || combined.contains("0x80070002")
             || combined.to_ascii_lowercase().contains("cannot find")
             || combined.to_ascii_lowercase().contains("not find");
@@ -899,5 +900,22 @@ mod tests {
         let trigger_disabled_xml = r#"<Task version="1.4"><Triggers><EventTrigger><Enabled>false</Enabled></EventTrigger></Triggers><Settings><Enabled>true</Enabled></Settings></Task>"#;
         let status = parse_task_xml_status(trigger_disabled_xml.as_bytes());
         assert!(!status.is_enabled);
+    }
+
+    #[test]
+    fn test_strip_driver_prefix() {
+        assert_eq!(
+            strip_driver_prefix("WDM: Speakers (RODE NT-USB)"),
+            "Speakers (RODE NT-USB)"
+        );
+        assert_eq!(strip_driver_prefix("MME: Realtek Audio"), "Realtek Audio");
+        assert_eq!(strip_driver_prefix("KS: Out 1-2"), "Out 1-2");
+        assert_eq!(strip_driver_prefix("ASIO: Focusrite USB"), "Focusrite USB");
+        assert_eq!(strip_driver_prefix("DirectSound: Primary"), "Primary");
+        assert_eq!(
+            strip_driver_prefix("Focusrite: Line In"),
+            "Focusrite: Line In"
+        );
+        assert_eq!(strip_driver_prefix("RODE NT-USB"), "RODE NT-USB");
     }
 }
