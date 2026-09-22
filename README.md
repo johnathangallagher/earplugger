@@ -1,5 +1,8 @@
 # earplugger
 
+> [!NOTE]
+> **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
+
 Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows.
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
