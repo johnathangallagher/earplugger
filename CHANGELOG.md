@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+- Added multi-candidate device name extraction and XPath `OR` matching in Windows Task Scheduler, ensuring Event 65 triggers match custom user-renamed endpoints (e.g. `Sennheiser 560S (2- RODE NT-USB)` matching `RODE NT-USB`).
+- Added automatic recovery for Windows Audio Device Graph Isolation / driver crashes (`Microsoft-Windows-Audio/Operational` Event ID 4).
+- Added matched filter preview logging in `earplugger install`.
+- Updated `earplugger status` to reflect audio reconnect trigger coverage (`Events 65, 4 (Active)`).
+
 ## [1.5.0] - 2026-09-23
 
 ### Features

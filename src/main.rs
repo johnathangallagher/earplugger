@@ -364,6 +364,15 @@ fn handle_install(args: &[String]) {
 
     if let Some(ref d) = device_name {
         println!("[*] Filtering trigger on device: '{}'", d);
+        let variants = task::extract_device_variants(d);
+        if variants.len() > 1 {
+            let formatted = variants
+                .iter()
+                .map(|v| format!("\"{}\"", v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("    Matched filters    : {}", formatted);
+        }
     }
 
     // If device not specified and not an explicit wildcard request, try to auto-detect from active Voicemeeter A1
@@ -374,6 +383,15 @@ fn handle_install(args: &[String]) {
                 let stripped = task::strip_driver_prefix(&a1);
                 if !stripped.is_empty() && stripped != "-" {
                     println!("[*] Filtering trigger on device: '{}'", stripped);
+                    let variants = task::extract_device_variants(stripped);
+                    if variants.len() > 1 {
+                        let formatted = variants
+                            .iter()
+                            .map(|v| format!("\"{}\"", v))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("    Matched filters    : {}", formatted);
+                    }
                     device_name = Some(stripped.to_string());
                 } else {
                     println!(
@@ -553,13 +571,18 @@ fn handle_status(args: &[String]) {
             println!(
                 "  Audio reconnect : {}",
                 if status.has_audio_trigger {
-                    if status.is_enabled && status.audio_trigger_enabled {
-                        "Event 65 (Active)"
+                    let desc = if status.has_engine_crash_trigger {
+                        "Events 65, 4"
                     } else {
-                        "Event 65 (Disabled)"
+                        "Event 65"
+                    };
+                    if status.is_enabled && status.audio_trigger_enabled {
+                        format!("{} (Active)", desc)
+                    } else {
+                        format!("{} (Disabled)", desc)
                     }
                 } else {
-                    "None"
+                    "None".to_string()
                 }
             );
             println!(
