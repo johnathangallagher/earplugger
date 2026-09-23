@@ -118,7 +118,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Publish GitHub Release
+      - name: Create Draft GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,6 +128,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "${{ needs.prepare.outputs.tag }}" \
             --notes-file release-assets/RELEASE_NOTES.md \
+            --draft \
             --verify-tag
 
 
