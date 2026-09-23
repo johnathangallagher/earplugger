@@ -79,15 +79,17 @@ class TestReleaseEngine(unittest.TestCase):
 
     def test_generate_release_notes(self):
         commits = [
-            Commit("1234567890abcdef", "feat(audio): support voicemeeter potato", "", "feat", "audio", False, "support voicemeeter potato"),
-            Commit("abcdef1234567890", "fix: prevent task XML entity injection", "", "fix", None, False, "prevent task XML entity injection"),
+            Commit("1234567890abcdef", "feat(audio): support voicemeeter potato", "", "feat", "audio", False, "support voicemeeter potato", "John Gallagher", "178059587+johnathangallagher@users.noreply.github.com"),
+            Commit("abcdef1234567890", "fix: prevent task XML entity injection", "", "fix", None, False, "prevent task XML entity injection", "John Gallagher", "johnathangallagher@users.noreply.github.com"),
         ]
         notes = generate_release_notes("1.4.0", "v1.3.0", commits, repo="johnathangallagher/earplugger")
-        self.assertIn("## What's Changed in v1.4.0", notes)
+        self.assertNotIn("## What's Changed in", notes)
         self.assertIn("### Features", notes)
         self.assertIn("- **audio**: support voicemeeter potato ([`1234567`](https://github.com/johnathangallagher/earplugger/commit/1234567890abcdef))", notes)
         self.assertIn("### Bug Fixes", notes)
         self.assertIn("- prevent task XML entity injection ([`abcdef1`](https://github.com/johnathangallagher/earplugger/commit/abcdef1234567890))", notes)
+        self.assertIn("### Contributors", notes)
+        self.assertIn("@johnathangallagher", notes)
         self.assertIn("https://github.com/johnathangallagher/earplugger/compare/v1.3.0...v1.4.0", notes)
 
     def test_update_cargo_toml(self):

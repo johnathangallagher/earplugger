@@ -70,15 +70,10 @@ jobs:
           path: RELEASE_NOTES.md
 
   build-release:
-    name: Build & Package Release (${{ matrix.target }})
+    name: Build Release Binary
     needs: prepare
     if: needs.prepare.outputs.dry_run != 'true'
     runs-on: windows-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-pc-windows-msvc
-          - i686-pc-windows-msvc
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -89,40 +84,19 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Run Tests
-        run: cargo test --target ${{ matrix.target }} --verbose
+        run: cargo test --verbose
 
       - name: Build Release Binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release
 
-      - name: Create Release Artifacts
-        shell: pwsh
-        run: |
-          $tag = "${{ needs.prepare.outputs.tag }}"
-          $dist = "earplugger-$tag-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path "$dist/src"
-          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "$dist/"
-          Copy-Item "src/install.bat" -Destination "$dist/src/"
-          Copy-Item "src/uninstall.bat" -Destination "$dist/src/"
-          Copy-Item README.md -Destination "$dist/"
-          Copy-Item LICENSE -Destination "$dist/"
-          Copy-Item SECURITY.md -Destination "$dist/"
-          Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip"
-
-          New-Item -ItemType Directory -Path "upload"
-          Copy-Item "$dist.zip" -Destination "upload/"
-          Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "upload/earplugger-$tag-${{ matrix.target }}.exe"
-          if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc") {
-            Copy-Item "target/${{ matrix.target }}/release/earplugger.exe" -Destination "upload/earplugger.exe"
-          }
-
-      - name: Upload Build Artifacts
+      - name: Upload Binary Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.target }}
-          path: upload/*
+          name: release-binary
+          path: target/release/earplugger.exe
 
   publish:
     name: Publish GitHub Release
@@ -150,11 +124,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ needs.prepare.outputs.tag }}" \
-            release-assets/*.zip \
-            release-assets/*.exe \
+            release-assets/earplugger.exe \
             --repo "${{ github.repository }}" \
             --title "${{ needs.prepare.outputs.tag }}" \
             --notes-file release-assets/RELEASE_NOTES.md \
             --verify-tag
+
 
 
