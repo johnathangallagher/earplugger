@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-23
+
+### Features
+- add dependabot auto-merge workflow (#12) ([`625a988`](https://github.com/johnathangallagher/earplugger/commit/625a988d7119c079d952fdef48e11d54cd300d78))
+- implement single-workflow release automation with conventional changelogs and manual dispatch (#10) ([`7919e83`](https://github.com/johnathangallagher/earplugger/commit/7919e83cf8bfdb4c3b7d18af15515178bd59dafb))
+
+### Bug Fixes
+- use gh release create to publish and attach assets atomically (#13) ([`2869010`](https://github.com/johnathangallagher/earplugger/commit/28690103a0afbe00c197fc565505b7005f9c5892))
+- strip markdown formatting from LICENSE (#11) ([`5523196`](https://github.com/johnathangallagher/earplugger/commit/55231961439a26a4afb823be0177397ab7434997))
+- upgrade codeql to v4 run cargo audit natively and pin ubuntu-24.04 (#9) ([`3dadbc2`](https://github.com/johnathangallagher/earplugger/commit/3dadbc2436d970e85aa107a38db95179bdd9400e))
+
+### Refactoring & Code Quality
+- relocate batch scripts to src and optimize ci workflows (#7) ([`a9e0ee3`](https://github.com/johnathangallagher/earplugger/commit/a9e0ee31f09df9cc455a7d15ac9f2b5b05c43a55))
+
+### Documentation & Wiki
+- rewrite readme to be concise direct and practical (#8) ([`7846a01`](https://github.com/johnathangallagher/earplugger/commit/7846a019d491a7a55678a44490d26e0c63e00d2d))
+
+### Maintenance & CI
+- **deps**: bump actions/download-artifact from 4 to 8 (#5) ([`aa8b0c6`](https://github.com/johnathangallagher/earplugger/commit/aa8b0c6bd78ef08018d2c725c000283904dc74dd))
+- **deps**: bump actions/upload-artifact from 4 to 7 (#3) ([`e2ffb88`](https://github.com/johnathangallagher/earplugger/commit/e2ffb8804e3f75587499b73161bb6680c1027e08))
+- **deps**: bump softprops/action-gh-release from 2 to 3 (#4) ([`d64ceaa`](https://github.com/johnathangallagher/earplugger/commit/d64ceaac27ea59e58839694b456b51c5bedac4e3))
+- **deps**: bump actions/checkout from 4 to 7 (#6) ([`b47f59e`](https://github.com/johnathangallagher/earplugger/commit/b47f59eba0df0c9cef186bcc23f5a36e16db8f86))
+
+**Full Changelog**: https://github.com/johnathangallagher/earplugger/compare/v1.3.0...v1.4.0
+
 ### Added
 - Added single-workflow release automation engine (`.github/scripts/release.py` and `workflow_dispatch` in `.github/workflows/release.yml`), enabling manual and automated releases with Conventional Commit changelog generation, SemVer version bumping, and zero bot PR churn.
 
