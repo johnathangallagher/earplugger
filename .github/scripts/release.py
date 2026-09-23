@@ -57,6 +57,8 @@ class Commit(NamedTuple):
     scope: Optional[str]
     is_breaking: bool
     description: str
+    author_name: str = ""
+    author_email: str = ""
 
 
 def run_git(args: List[str], cwd: Optional[Path] = None) -> str:
@@ -87,7 +89,7 @@ def get_tags(repo_root: Path) -> List[str]:
 
 def get_commits_between(repo_root: Path, since_ref: Optional[str], until_ref: str = "HEAD") -> List[Commit]:
     git_range = f"{since_ref}..{until_ref}" if since_ref else until_ref
-    cmd = ["log", "--no-merges", "--pretty=format:%H%x1f%s%x1f%b%x1e", git_range]
+    cmd = ["log", "--no-merges", "--pretty=format:%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1e", git_range]
     try:
         raw = run_git(cmd, cwd=repo_root)
     except subprocess.CalledProcessError as e:
@@ -108,6 +110,8 @@ def get_commits_between(repo_root: Path, since_ref: Optional[str], until_ref: st
         chash = parts[0].strip()
         subject = parts[1].strip() if len(parts) > 1 else ""
         body = parts[2].strip() if len(parts) > 2 else ""
+        author_name = parts[3].strip() if len(parts) > 3 else ""
+        author_email = parts[4].strip() if len(parts) > 4 else ""
 
         if subject.startswith("chore(release):") or subject.startswith("chore: release") or "[skip ci]" in subject:
             continue
@@ -120,10 +124,10 @@ def get_commits_between(repo_root: Path, since_ref: Optional[str], until_ref: st
             desc = match.group("desc").strip()
             body_breaking = "BREAKING CHANGE:" in body or "BREAKING-CHANGE:" in body
             is_breaking = breaking_bang or body_breaking
-            commits.append(Commit(chash, subject, body, ctype, scope, is_breaking, desc))
+            commits.append(Commit(chash, subject, body, ctype, scope, is_breaking, desc, author_name, author_email))
         else:
             body_breaking = "BREAKING CHANGE:" in body or "BREAKING-CHANGE:" in body
-            commits.append(Commit(chash, subject, body, None, None, body_breaking, subject))
+            commits.append(Commit(chash, subject, body, None, None, body_breaking, subject, author_name, author_email))
 
     return commits
 
@@ -178,13 +182,41 @@ def categorize_commits(commits: List[Commit]) -> Dict[str, List[Commit]]:
     return categorized
 
 
+def extract_contributors(commits: List[Commit]) -> List[str]:
+    contributors: set[str] = set()
+    for c in commits:
+        # Check author email and body for github noreply handles
+        for text in [c.author_email, c.body]:
+            for m in re.finditer(r"(?:\d+\+)?([a-zA-Z0-9_-]+)@users\.noreply\.github\.com", text):
+                handle = m.group(1).removesuffix("[bot]")
+                if handle and not handle.endswith("[bot]"):
+                    contributors.add(handle)
+            for m in re.finditer(r"Co-authored-by:\s*([^\n<]+)<([^>]+)>", text, re.IGNORECASE):
+                email = m.group(2)
+                noreply = re.search(r"(?:\d+\+)?([a-zA-Z0-9_-]+)@users\.noreply\.github\.com", email)
+                if noreply:
+                    handle = noreply.group(1).removesuffix("[bot]")
+                    if handle and not handle.endswith("[bot]"):
+                        contributors.add(handle)
+
+        if c.author_name:
+            norm_name = c.author_name.lower().replace(" ", "")
+            if "johnathan" in norm_name or "gallagher" in norm_name:
+                contributors.add("johnathangallagher")
+
+    if not contributors:
+        contributors.add("johnathangallagher")
+
+    return sorted(contributors)
+
+
 def generate_release_notes(
     new_version: str,
     prev_tag: Optional[str],
     commits: List[Commit],
     repo: str = "johnathangallagher/earplugger",
 ) -> str:
-    lines = [f"## What's Changed in v{new_version}", ""]
+    lines: List[str] = []
     categorized = categorize_commits(commits)
 
     has_content = False
@@ -208,12 +240,18 @@ def generate_release_notes(
         lines.append("- Routine maintenance release and internal optimizations.")
         lines.append("")
 
+    contributors = extract_contributors(commits)
+    if contributors:
+        lines.append("### Contributors")
+        lines.append(", ".join(f"@{u}" for u in contributors))
+        lines.append("")
+
     if prev_tag:
         compare_url = f"https://github.com/{repo}/compare/{prev_tag}...v{new_version}"
         lines.append(f"**Full Changelog**: {compare_url}")
         lines.append("")
 
-    return "\n".join(lines)
+    return "\n".join(lines).strip() + "\n"
 
 
 def update_cargo_toml(cargo_path: Path, new_version: str) -> None:
