@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-23
+
+### Features
+- publish releases as drafts only (#17) ([`8496f46`](https://github.com/johnathangallagher/earplugger/commit/8496f46c0f1c881e5286df4a33dcc1a9c894bd5e))
+- add power management and sleep resume trigger detection (#16) ([`c595090`](https://github.com/johnathangallagher/earplugger/commit/c59509006b75e5a360354854abf6bbab66fa5a1a))
+- streamline release assets to earplugger.exe only and add contributors (#15) ([`3d30195`](https://github.com/johnathangallagher/earplugger/commit/3d301953fa536f991ce80f48b3cab2f66bfaf374))
+
+### Bug Fixes
+- checkout repo and pass repo flag in release publish job (#14) ([`23ba04d`](https://github.com/johnathangallagher/earplugger/commit/23ba04d90c1e65c7da645a3ee35dca64fde81d14))
+
+### Contributors
+@johnathangallagher
+
+**Full Changelog**: https://github.com/johnathangallagher/earplugger/compare/v1.4.0...v1.5.0
+
 ### Features
 - Added power management and sleep/wake resume event trigger detection via Windows Task Scheduler (`Microsoft-Windows-Power-Troubleshooter` Event ID 1, `Microsoft-Windows-Kernel-Power` Event IDs 107 and 507).
 - Added `--no-wake` and `--wake` CLI options to toggle sleep/resume trigger registration during `earplugger install`.
