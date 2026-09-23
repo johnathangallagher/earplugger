@@ -93,6 +93,7 @@ Options for 'install':
   --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
   --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
   --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake               Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
   --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
@@ -118,6 +119,7 @@ pub struct ParsedArgs {
     pub silent: bool,
     pub disable_channel: bool,
     pub no_wake: bool,
+    pub wake_set: bool,
     pub help_requested: bool,
 }
 
@@ -129,6 +131,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut silent = false;
     let mut disable_channel = false;
     let mut no_wake = false;
+    let mut wake_set = false;
     let mut help_requested = false;
     let mut i = 0;
 
@@ -146,9 +149,11 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             i += 1;
         } else if arg == "--no-wake" {
             no_wake = true;
+            wake_set = true;
             i += 1;
         } else if arg == "--wake" {
             no_wake = false;
+            wake_set = true;
             i += 1;
         } else if arg == "--delay-ms" {
             if i + 1 >= args.len() {
@@ -244,6 +249,7 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
         silent,
         disable_channel,
         no_wake,
+        wake_set,
         help_requested,
     })
 }
@@ -262,7 +268,7 @@ fn handle_restart(args: &[String]) {
         return;
     }
 
-    if opts.device.is_some() || opts.user.is_some() || opts.disable_channel || opts.no_wake {
+    if opts.device.is_some() || opts.user.is_some() || opts.disable_channel || opts.wake_set {
         eprintln!(
             "[earplugger] Error: Invalid options for 'restart'. Only --delay-ms and --silent are accepted."
         );
@@ -327,7 +333,7 @@ fn handle_install(args: &[String]) {
 
     if opts.silent || opts.disable_channel {
         eprintln!(
-            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, --user, and --no-wake are accepted."
+            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, --user, --no-wake, and --wake are accepted."
         );
         std::process::exit(1);
     }
@@ -444,7 +450,7 @@ fn handle_uninstall(args: &[String]) {
         || opts.user.is_some()
         || opts.silent
         || opts.delay_ms_set
-        || opts.no_wake
+        || opts.wake_set
     {
         eprintln!(
             "[-] Error: Invalid options for 'uninstall'. Only --disable-channel is accepted."
@@ -506,7 +512,7 @@ fn handle_status(args: &[String]) {
         || opts.silent
         || opts.disable_channel
         || opts.delay_ms_set
-        || opts.no_wake
+        || opts.wake_set
     {
         eprintln!("[-] Error: 'status' takes no extra options.");
         std::process::exit(1);
@@ -633,6 +639,7 @@ mod tests {
         assert_eq!(opts.device, None);
         assert!(!opts.silent);
         assert!(!opts.no_wake);
+        assert!(!opts.wake_set);
         assert!(!opts.help_requested);
     }
 
@@ -641,10 +648,48 @@ mod tests {
         let args_no_wake = vec!["--no-wake".to_string()];
         let opts = parse_options(&args_no_wake).unwrap();
         assert!(opts.no_wake);
+        assert!(opts.wake_set);
 
         let args_wake = vec!["--no-wake".to_string(), "--wake".to_string()];
         let opts2 = parse_options(&args_wake).unwrap();
         assert!(!opts2.no_wake);
+        assert!(opts2.wake_set);
+
+        let args_only_wake = vec!["--wake".to_string()];
+        let opts3 = parse_options(&args_only_wake).unwrap();
+        assert!(!opts3.no_wake);
+        assert!(opts3.wake_set);
+    }
+
+    #[test]
+    fn test_wake_options_rejected_for_subcommands() {
+        let restart_opts = parse_options(&["--wake".to_string()]).unwrap();
+        assert!(restart_opts.wake_set);
+        assert!(
+            restart_opts.device.is_some()
+                || restart_opts.user.is_some()
+                || restart_opts.disable_channel
+                || restart_opts.wake_set
+        );
+
+        let uninstall_opts = parse_options(&["--no-wake".to_string()]).unwrap();
+        assert!(
+            uninstall_opts.device.is_some()
+                || uninstall_opts.user.is_some()
+                || uninstall_opts.silent
+                || uninstall_opts.delay_ms_set
+                || uninstall_opts.wake_set
+        );
+
+        let status_opts = parse_options(&["--wake".to_string()]).unwrap();
+        assert!(
+            status_opts.device.is_some()
+                || status_opts.user.is_some()
+                || status_opts.silent
+                || status_opts.disable_channel
+                || status_opts.delay_ms_set
+                || status_opts.wake_set
+        );
     }
 
     #[test]

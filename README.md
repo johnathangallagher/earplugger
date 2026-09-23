@@ -58,7 +58,7 @@ sequenceDiagram
 
 ### 1. Download or Build
 
-- **Prebuilt binary:** Download `earplugger.exe` or the release archive from [Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
+- **Prebuilt binary:** Download `earplugger.exe` from [Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
 - **From source:**
   ```bash
   git clone https://github.com/johnathangallagher/earplugger.git
@@ -79,7 +79,7 @@ This will:
 - Enable the Windows Audio operational event log channel (`wevtutil sl Microsoft-Windows-Audio/Operational /e:true`).
 - Register the `Earplugger_AutoRestart` event trigger in Windows Task Scheduler.
 
-If you downloaded the release ZIP, you can also right-click `src\install.bat` and select **Run as administrator**.
+When working from a source clone, you can also right-click `src\install.bat` and select **Run as administrator**.
 
 #### Custom Options
 
@@ -129,6 +129,7 @@ Options for 'install':
   --delay-ms <MS>      Settling delay in milliseconds to configure in the trigger (default: 150)
   --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
   --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake               Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
   --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
@@ -144,7 +145,7 @@ To remove the scheduled task:
 earplugger.exe uninstall
 ```
 
-Or right-click `src\uninstall.bat` and select **Run as administrator**.
+Or if using the source checkout, right-click `src\uninstall.bat` and select **Run as administrator**.
 
 To also turn off the Windows Audio operational event channel:
 

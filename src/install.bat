@@ -52,5 +52,6 @@ echo   --device "NAME"       Audio device name filter (e.g. "RODE NT-USB")
 echo   --delay-ms MS         Millisecond delay for USB handshake (default: 150)
 echo   --user "DOMAIN\User"  Target user for scheduled task
 echo   --no-wake             Disable triggers on system wake/resume from sleep
+echo   --wake                Enable triggers on system wake/resume from sleep
 echo   --help, -h, /?        Show this help message
 exit /b 0

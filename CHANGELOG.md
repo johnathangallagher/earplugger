@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+- Added power management and sleep/wake resume event trigger detection via Windows Task Scheduler (`Microsoft-Windows-Power-Troubleshooter` Event ID 1, `Microsoft-Windows-Kernel-Power` Event IDs 107 and 507).
+- Added `--no-wake` and `--wake` CLI options to toggle sleep/resume trigger registration during `earplugger install`.
+- Added multi-trigger diagnostics in `earplugger status`, reporting individual active/disabled states for both audio reconnect and sleep/resume triggers.
+
 ## [1.4.0] - 2026-09-23
 
 ### Features
