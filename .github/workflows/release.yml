@@ -139,11 +139,14 @@ jobs:
           merge-multiple: true
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: ${{ needs.prepare.outputs.tag }}
-          body_path: release-assets/RELEASE_NOTES.md
-          files: |
-            release-assets/*.zip
-            release-assets/*.exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            release-assets/*.zip \
+            release-assets/*.exe \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --notes-file release-assets/RELEASE_NOTES.md \
+            --verify-tag
+
