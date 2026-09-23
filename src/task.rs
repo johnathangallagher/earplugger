@@ -235,6 +235,15 @@ pub fn clean_device_name(raw: &str) -> String {
         }
         if let Some(open_idx) = match_pos {
             let role = s[..open_idx].trim();
+            let inner = s[open_idx + 1..s.len() - 1].trim();
+
+            let has_instance_prefix = if let Some(dash_idx) = inner.find("- ") {
+                let p = &inner[..dash_idx];
+                !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())
+            } else {
+                false
+            };
+
             let base_role = role.split('(').next().unwrap_or("").trim();
             let base_lower = base_role.to_lowercase();
             let is_role = ENDPOINT_ROLES.iter().any(|&r| {
@@ -243,11 +252,11 @@ pub fn clean_device_name(raw: &str) -> String {
                     || (base_lower.ends_with(r)
                         && base_lower[..base_lower.len() - r.len()].ends_with(' '))
             });
-            if is_role {
-                let inner = s[open_idx + 1..s.len() - 1].trim();
-                if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
-                    s = inner;
-                }
+            if (is_role || has_instance_prefix)
+                && inner.chars().any(|c| c.is_alphabetic())
+                && inner.len() > 1
+            {
+                s = inner;
             }
         }
     }
@@ -263,6 +272,116 @@ pub fn clean_device_name(raw: &str) -> String {
     s.to_string()
 }
 
+pub fn extract_device_variants(raw: &str) -> Vec<String> {
+    let base = strip_driver_prefix(raw).trim();
+    if base.is_empty() {
+        return Vec::new();
+    }
+
+    let mut variants: Vec<String> = Vec::new();
+
+    let mut push_unique = |candidate: &str| {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty()
+            && !variants
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            variants.push(trimmed.to_string());
+        }
+    };
+
+    push_unique(base);
+
+    let cleaned = clean_device_name(base);
+    if !cleaned.is_empty() {
+        push_unique(&cleaned);
+    }
+
+    // Strip trailing numeric instance parentheticals or qualifiers before inspecting outer/inner roles
+    const TRAILING_QUALIFIERS: &[&str] = &[
+        "loopback",
+        "enhanced",
+        "echo cancelling",
+        "echo-cancelling",
+        "default device",
+    ];
+
+    let mut s = base;
+    while s.ends_with(')') {
+        if let Some(last_paren) = s.rfind(" (") {
+            let inner = s[last_paren + 2..s.len() - 1].trim();
+            if !inner.is_empty()
+                && (inner.chars().all(|c| c.is_ascii_digit())
+                    || TRAILING_QUALIFIERS
+                        .iter()
+                        .any(|&q| inner.eq_ignore_ascii_case(q)))
+            {
+                s = s[..last_paren].trim();
+                continue;
+            }
+        }
+        break;
+    }
+
+    if s.ends_with(')') {
+        let mut depth = 0;
+        let mut match_pos = None;
+        for (idx, ch) in s.char_indices().rev() {
+            if ch == ')' {
+                depth += 1;
+            } else if ch == '(' {
+                depth -= 1;
+                if depth == 0 {
+                    if idx > 0 && s.as_bytes()[idx - 1] == b' ' {
+                        match_pos = Some(idx);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if let Some(open_idx) = match_pos {
+            let outer = s[..open_idx].trim();
+            let inner = s[open_idx + 1..s.len() - 1].trim();
+
+            if let Some(dash_idx) = inner.find("- ") {
+                let p = &inner[..dash_idx];
+                if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
+                    let bare = inner[dash_idx + 2..].trim();
+                    push_unique(bare);
+                    push_unique(inner);
+                }
+            } else if inner.chars().any(|c| c.is_alphabetic()) && inner.len() > 1 {
+                push_unique(inner);
+            }
+
+            let base_role = outer.split('(').next().unwrap_or("").trim();
+            let base_lower = base_role.to_lowercase();
+            let is_generic_role = ENDPOINT_ROLES.iter().any(|&r| {
+                outer.eq_ignore_ascii_case(r)
+                    || base_lower == *r
+                    || (base_lower.ends_with(r)
+                        && base_lower[..base_lower.len() - r.len()].ends_with(' '))
+            });
+
+            if !is_generic_role && !outer.is_empty() {
+                push_unique(outer);
+            }
+        }
+    }
+
+    if let Some(dash_idx) = base.find("- ") {
+        let p = &base[..dash_idx];
+        if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
+            let bare = base[dash_idx + 2..].trim();
+            push_unique(bare);
+        }
+    }
+
+    variants
+}
+
 pub fn generate_task_xml(
     exe_path: &str,
     device_filter: Option<&str>,
@@ -272,31 +391,24 @@ pub fn generate_task_xml(
 ) -> Result<String, String> {
     let filter_clause = match device_filter {
         Some(dev) => {
-            let trimmed = dev.trim();
-            let mut variants = Vec::new();
-            variants.push(trimmed.to_string());
-
-            // If the filter contains a parenthetical friendly name format (e.g. "Speakers (RODE NT-USB)"),
-            // also include the extracted hardware description ("RODE NT-USB") in an OR clause.
-            // Using clean_device_name guarantees robust extraction without corrupting multi-parenthetical
-            // device names like "Speakers (RODE NT-USB) (1)".
-            let cleaned = clean_device_name(trimmed);
-            if !cleaned.is_empty() && cleaned != trimmed {
-                variants.push(cleaned);
-            }
-
-            if variants.len() == 1 {
+            let variants = extract_device_variants(dev);
+            if variants.is_empty() {
+                " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
+            } else if variants.len() == 1 {
                 let formatted = format_xpath_string_literal(&variants[0])?;
                 format!(
                     " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
                     formatted
                 )
             } else {
-                let f0 = format_xpath_string_literal(&variants[0])?;
-                let f1 = format_xpath_string_literal(&variants[1])?;
+                let mut terms = Vec::new();
+                for v in &variants {
+                    let formatted = format_xpath_string_literal(v)?;
+                    terms.push(format!("Data[@Name='DeviceName']={}", formatted));
+                }
                 format!(
-                    " and *[EventData[(Data[@Name='DeviceName']={} or Data[@Name='DeviceName']={}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
-                    f0, f1
+                    " and *[EventData[({}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    terms.join(" or ")
                 )
             }
         }
@@ -306,7 +418,7 @@ pub fn generate_task_xml(
     };
 
     let subscription = format!(
-        "<QueryList><Query Id=\"0\" Path=\"Microsoft-Windows-Audio/Operational\"><Select Path=\"Microsoft-Windows-Audio/Operational\">*[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=65)]]{}</Select></Query></QueryList>",
+        "<QueryList><Query Id=\"0\" Path=\"Microsoft-Windows-Audio/Operational\"><Select Path=\"Microsoft-Windows-Audio/Operational\">*[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=65)]]{}</Select><Select Path=\"Microsoft-Windows-Audio/Operational\">*[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=4)]]</Select></Query></QueryList>",
         filter_clause
     );
 
@@ -576,6 +688,7 @@ pub struct TaskStatusDetails {
     pub is_enabled: bool,
     pub has_audio_trigger: bool,
     pub audio_trigger_enabled: bool,
+    pub has_engine_crash_trigger: bool,
     pub has_wake_trigger: bool,
     pub wake_trigger_enabled: bool,
     pub xml_raw: String,
@@ -654,6 +767,7 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 
     let mut has_audio_trigger = false;
     let mut audio_trigger_enabled = false;
+    let mut has_engine_crash_trigger = false;
     let mut has_wake_trigger = false;
     let mut wake_trigger_enabled = false;
     let mut any_trigger_enabled = false;
@@ -699,6 +813,7 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         };
 
         let is_audio = trigger_block.contains("microsoft-windows-audio");
+        let has_crash = trigger_block.contains("eventid=4");
         let is_wake = trigger_block.contains("microsoft-windows-power-troubleshooter")
             || trigger_block.contains("microsoft-windows-kernel-power");
 
@@ -706,6 +821,9 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
             has_audio_trigger = true;
             if trig_enabled {
                 audio_trigger_enabled = true;
+            }
+            if has_crash {
+                has_engine_crash_trigger = true;
             }
         }
         if is_wake {
@@ -730,6 +848,7 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         is_enabled,
         has_audio_trigger,
         audio_trigger_enabled,
+        has_engine_crash_trigger,
         has_wake_trigger,
         wake_trigger_enabled,
         xml_raw: xml,
@@ -890,6 +1009,47 @@ mod tests {
         assert!(xml2.contains(
             "(Data[@Name=&apos;DeviceName&apos;]=&apos;Kopfhörer (Dynamisch) (RODE NT-USB)&apos; or Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;)"
         ));
+    }
+
+    #[test]
+    fn test_extract_device_variants_custom_friendly_name_with_instance() {
+        let input = "Sennheiser 560S (2- RODE NT-USB)";
+        let variants = extract_device_variants(input);
+        assert_eq!(
+            variants,
+            vec![
+                "Sennheiser 560S (2- RODE NT-USB)",
+                "RODE NT-USB",
+                "2- RODE NT-USB",
+                "Sennheiser 560S",
+            ]
+        );
+        assert_eq!(clean_device_name(input), "RODE NT-USB");
+
+        let xml = generate_task_xml(r"C:\earplugger.exe", Some(input), 150, None, true).unwrap();
+        assert!(xml.contains(
+            "Data[@Name=&apos;DeviceName&apos;]=&apos;Sennheiser 560S (2- RODE NT-USB)&apos;"
+        ));
+        assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
+        assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;2- RODE NT-USB&apos;"));
+        assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;Sennheiser 560S&apos;"));
+        assert!(xml.contains("EventID=4"));
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_engine_crash_trigger() {
+        let xml = r#"<Task>
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-Audio/Operational"&gt;&lt;Select&gt;*[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=65)]]&lt;/Select&gt;&lt;Select&gt;*[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=4)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+</Task>"#;
+        let status = parse_task_xml_status(xml.as_bytes());
+        assert!(status.has_audio_trigger);
+        assert!(status.has_engine_crash_trigger);
+        assert!(!status.has_wake_trigger);
     }
 
     #[test]
