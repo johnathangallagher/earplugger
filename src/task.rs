@@ -546,7 +546,8 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        let not_found = !task_file.exists()
+            || matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || msg.contains("0x80070002")
             || msg.to_ascii_lowercase().contains("cannot find")
             || msg.to_ascii_lowercase().contains("not find");
@@ -590,8 +591,6 @@ fn find_tag_open(haystack: &str, tag_name: &str) -> Option<usize> {
             if ch == b'>' || ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n' || ch == b'/' {
                 return Some(idx);
             }
-        } else {
-            return Some(idx);
         }
         offset = idx + 1;
     }
@@ -614,11 +613,20 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 
     // Extract <Settings> block to check task-level enabled status.
     // Use relative indexing, tag boundary checking, and bounds guards to support
-    // attribute-bearing tags (e.g. <Settings xmlns="...">) without slicing panics.
+    // attribute-bearing tags (e.g. <Settings xmlns="...">) and self-closing tags (<Settings ... />).
     let lower_xml = xml.to_ascii_lowercase();
     let settings_block = if let Some(start) = find_tag_open(&lower_xml, "<settings") {
-        if let Some(end_offset) = lower_xml[start..].find("</settings>") {
-            &xml[start..start + end_offset]
+        if let Some(tag_close) = lower_xml[start..].find('>') {
+            let tag_header = &lower_xml[start..start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                // Self-closing element (<Settings ... />); empty settings content
+                ""
+            } else if let Some(end_offset) = lower_xml[start + tag_close + 1..].find("</settings>")
+            {
+                &xml[start + tag_close + 1..start + tag_close + 1 + end_offset]
+            } else {
+                &xml[start + tag_close + 1..]
+            }
         } else {
             &xml[start..]
         }
@@ -654,11 +662,24 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
     let mut cursor = 0;
     while let Some(rel_start) = find_tag_open(&lower_xml[cursor..], "<eventtrigger") {
         let t_start = cursor + rel_start;
-        let t_end = match lower_xml[t_start..].find("</eventtrigger>") {
-            Some(end) => t_start + end + "</eventtrigger>".len(),
-            None => lower_xml.len(),
+        let (trigger_block, t_end) = if let Some(tag_close) = lower_xml[t_start..].find('>') {
+            let tag_header = &lower_xml[t_start..t_start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                // Self-closing <EventTrigger ... /> has no child elements or subscription
+                ("", t_start + tag_close + 1)
+            } else if let Some(end) = lower_xml[t_start + tag_close + 1..].find("</eventtrigger>") {
+                let content_end = t_start + tag_close + 1 + end;
+                (
+                    &lower_xml[t_start..content_end + "</eventtrigger>".len()],
+                    content_end + "</eventtrigger>".len(),
+                )
+            } else {
+                (&lower_xml[t_start..], lower_xml.len())
+            }
+        } else {
+            (&lower_xml[t_start..], lower_xml.len())
         };
-        let trigger_block = &lower_xml[t_start..t_end];
+
         has_any_trigger = true;
 
         let trig_enabled = if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
@@ -735,7 +756,8 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        let not_found = !task_file.exists()
+            || matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || combined.contains("0x80070002")
             || combined.to_ascii_lowercase().contains("cannot find")
             || combined.to_ascii_lowercase().contains("not find");
@@ -1038,6 +1060,25 @@ mod tests {
         assert!(status2.audio_trigger_enabled);
         assert!(status2.has_wake_trigger);
         assert!(!status2.wake_trigger_enabled);
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_self_closing_tags() {
+        let xml = r#"<Task version="1.4">
+  <Triggers>
+    <EventTrigger id="dummy" />
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;&lt;Select Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Audio&apos;] and (EventID=65)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Settings xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task" />
+</Task>"#;
+        let status = parse_task_xml_status(xml.as_bytes());
+        assert!(status.is_enabled);
+        assert!(status.has_audio_trigger);
+        assert!(status.audio_trigger_enabled);
+        assert!(!status.has_wake_trigger);
     }
 
     #[test]
