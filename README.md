@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
 
-Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows, or when resuming from sleep.
+Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows, when resuming from sleep, or after an audio driver / engine crash.
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
@@ -19,9 +19,10 @@ When using **Voicemeeter** (Standard, Banana, or Potato) with a **KVM switch**, 
 1. Voicemeeter locks its master clock and mixing bus to the device configured under **Hardware Output A1**.
 2. Switching the KVM disconnects the USB device, invalidating the active audio stream.
 3. Switching back reconnects the device, but Voicemeeter often fails to re-acquire the stream cleanly—leaving the audio distorted, crackling, or completely silent.
-4. The usual fix is manually opening Voicemeeter and hitting `Menu -> Restart Audio Engine` (`Ctrl + R`) every time.
+4. Similarly, when resuming the PC from sleep or when the Windows Audio service (`audiodg.exe`) / driver recovers from a fault, stream handles break and require a restart.
+5. The usual fix is manually opening Voicemeeter and hitting `Menu -> Restart Audio Engine` (`Ctrl + R`) every time.
 
-`earplugger` automates this. It listens for the Windows device reconnection event, waits a moment for the USB handshake to settle, and sends a restart signal directly to Voicemeeter via its native API.
+`earplugger` automates this. It listens for the Windows reconnection, wake, or driver crash event, waits a moment for the USB handshake to settle, and sends a restart signal directly to Voicemeeter via its native API.
 
 No background processes. No system tray clutter. 0 MB RAM and 0% CPU when idle.
 
@@ -31,14 +32,14 @@ No background processes. No system tray clutter. 0 MB RAM and 0% CPU when idle.
 
 ```mermaid
 sequenceDiagram
-    participant KVM as KVM Switch / USB
-    participant Win as Windows Audio Subsystem
+    participant Source as KVM Switch / Wake / Driver Crash
+    participant Win as Windows Subsystems (Audio & Power)
     participant Task as Windows Task Scheduler
     participant EP as earplugger (Rust)
     participant VM as Voicemeeter
 
-    KVM->>Win: USB audio device reconnects
-    Win->>Win: Logs Event ID 65 (Device state ACTIVE)
+    Source->>Win: USB reconnect / wake / audiodg.exe fault
+    Win->>Win: Logs Event (ID 65, 4, 1, 107, 507)
     Win->>Task: Event trigger fires
     Task->>EP: Runs earplugger restart (windowless)
     EP->>EP: Waits 150ms for USB handshake to settle
@@ -47,8 +48,8 @@ sequenceDiagram
     EP-->>Task: Exits cleanly
 ```
 
-1. **Event trigger:** Subscribes to `Microsoft-Windows-Audio/Operational` Event ID 65 via Windows Task Scheduler.
-2. **Device filter:** Triggers only when your specific audio output device transitions to active.
+1. **Event triggers:** Subscribes to device reconnects (`Event ID 65`) and audio engine / driver crashes (`Event ID 4`) in `Microsoft-Windows-Audio/Operational`, plus system sleep/wake resume events in `System` (`Power-Troubleshooter Event ID 1`, `Kernel-Power Event IDs 107 & 507`).
+2. **Multi-candidate device filter:** Automatically generates an XPath `OR` filter matching full friendly names (`"Sennheiser 560S (2- RODE NT-USB)"`), bare hardware names (`"RODE NT-USB"`), custom user renames (`"Sennheiser 560S"`), and endpoint instance prefixes (`"2- RODE NT-USB"`), guaranteeing trigger activation regardless of how Windows formats Event 65.
 3. **Handshake debounce:** Pauses for a configurable 150ms so Windows audio drivers finish enumerating before restarting the engine.
 4. **Native IPC:** Connects directly to Voicemeeter's shared memory API (`VoicemeeterRemote64.dll` or `VoicemeeterRemote.dll`), sets `Command.Restart = 1.0`, confirms the command was received, and unloads.
 
@@ -126,7 +127,7 @@ Options for 'restart':
 
 Options for 'install':
   --device <NAME>      Audio device name filter. If omitted, auto-detects A1 from Voicemeeter.
-  --delay-ms <MS>      Settling delay in milliseconds to configure in the trigger (default: 150)
+  --delay-ms <MS>      Settling delay in milliseconds to configure in the trigger (default: 150, max: 30000)
   --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
   --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
   --wake               Enable triggers on system wake/resume from sleep

@@ -2,10 +2,12 @@
 
 ## Windows Event Log Channels
 `earplugger` subscribes to:
-1. **Audio Reconnect Trigger**:
+1. **Audio Reconnect & Driver Crash Trigger**:
    - **Channel**: `Microsoft-Windows-Audio/Operational`
    - **Provider**: `Microsoft-Windows-Audio`
-   - **Event ID**: `65` (Audio device state transition to ACTIVE)
+   - **Event IDs**:
+     - `65` (Audio device state transition to ACTIVE upon USB/KVM reconnect)
+     - `4` (Windows Audio Device Graph Isolation / driver error recovery)
 2. **Sleep / Resume Trigger** (enabled by default; toggleable via `--no-wake`):
    - **Channel**: `System`
    - **Providers & Event IDs**:

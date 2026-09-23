@@ -2,7 +2,7 @@
 
 Welcome to the **earplugger** documentation wiki.
 
-`earplugger` is a lightweight, zero-overhead Windows utility designed to solve audio buffer desynchronization and clock drift in VB-Audio Voicemeeter when switching hardware KVM switches, USB hubs, or audio endpoints.
+`earplugger` is a lightweight, zero-overhead Windows utility designed to solve audio buffer desynchronization and clock drift in VB-Audio Voicemeeter when switching hardware KVM switches, hotplugging USB devices, resuming from sleep, or recovering from audio driver faults.
 
 ## Wiki Navigation
 - [Architecture](Architecture.md): Deep dive into how `earplugger` intercepts Windows MMDevAPI events, manages IPC with Voicemeeter, and enforces RAII FFI safety.
