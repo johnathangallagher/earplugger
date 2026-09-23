@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
 
-Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows.
+Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows, or when resuming from sleep.
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](#)
@@ -58,7 +58,7 @@ sequenceDiagram
 
 ### 1. Download or Build
 
-- **Prebuilt binary:** Download `earplugger.exe` or the release archive from [Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
+- **Prebuilt binary:** Download `earplugger.exe` from [Releases](https://github.com/johnathangallagher/earplugger/releases/latest).
 - **From source:**
   ```bash
   git clone https://github.com/johnathangallagher/earplugger.git
@@ -79,7 +79,7 @@ This will:
 - Enable the Windows Audio operational event log channel (`wevtutil sl Microsoft-Windows-Audio/Operational /e:true`).
 - Register the `Earplugger_AutoRestart` event trigger in Windows Task Scheduler.
 
-If you downloaded the release ZIP, you can also right-click `src\install.bat` and select **Run as administrator**.
+When working from a source clone, you can also right-click `src\install.bat` and select **Run as administrator**.
 
 #### Custom Options
 
@@ -92,6 +92,9 @@ earplugger.exe install --delay-ms 250
 
 # Bind the task to a specific user account:
 earplugger.exe install --user "DOMAIN\User"
+
+# Disable sleep/wake resume triggers:
+earplugger.exe install --no-wake
 ```
 
 ### 3. Verify
@@ -125,6 +128,8 @@ Options for 'install':
   --device <NAME>      Audio device name filter. If omitted, auto-detects A1 from Voicemeeter.
   --delay-ms <MS>      Settling delay in milliseconds to configure in the trigger (default: 150)
   --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
+  --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake               Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
   --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
@@ -140,7 +145,7 @@ To remove the scheduled task:
 earplugger.exe uninstall
 ```
 
-Or right-click `src\uninstall.bat` and select **Run as administrator**.
+Or if using the source checkout, right-click `src\uninstall.bat` and select **Run as administrator**.
 
 To also turn off the Windows Audio operational event channel:
 

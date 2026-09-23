@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+- Added power management and sleep/wake resume event trigger detection via Windows Task Scheduler (`Microsoft-Windows-Power-Troubleshooter` Event ID 1, `Microsoft-Windows-Kernel-Power` Event IDs 107 and 507).
+- Added `--no-wake` and `--wake` CLI options to toggle sleep/resume trigger registration during `earplugger install`.
+- Added multi-trigger diagnostics in `earplugger status`, reporting individual active/disabled states for both audio reconnect and sleep/resume triggers.
+
 ## [1.4.0] - 2026-09-23
 
 ### Features
@@ -42,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened fallback argument parsing in `src/uninstall.bat` using iterative `shift` parsing.
 - Extracted `strip_driver_prefix` to preserve friendly names during Voicemeeter A1 auto-detection, enabling dual-clause XPath matching in generated task triggers.
 - Replaced permissive `!task_file.is_file()` checks in `query_task_status` and `uninstall_task` with explicit `io::ErrorKind::NotFound` matching.
-- Updated `.github/workflows/release.yml` to package `src/install.bat` and `src/uninstall.bat` within `src/` in release archives.
+- Updated `.github/workflows/release.yml` to build and publish standalone `earplugger.exe` with atomic asset attachment.
 - Optimized `.github/workflows/security.yml` dependency audit by installing prebuilt `cargo-audit` via `taiki-e/install-action@cargo-audit`, eliminating the ~3 minute compilation bottleneck from source.
 - Upgraded CodeQL actions to `v4` (`github/codeql-action/init@v4`, `github/codeql-action/analyze@v4`) and replaced `rustsec/audit-check` with native `cargo audit`, eliminating Node.js 20 and CodeQL Action v3 deprecation warnings.
 - Pinned Ubuntu runner images to `ubuntu-24.04` across CI/CD workflows, eliminating runner migration notices.

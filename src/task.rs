@@ -268,6 +268,7 @@ pub fn generate_task_xml(
     device_filter: Option<&str>,
     delay_ms: u64,
     user: Option<&str>,
+    include_wake_triggers: bool,
 ) -> Result<String, String> {
     let filter_clause = match device_filter {
         Some(dev) => {
@@ -312,6 +313,17 @@ pub fn generate_task_xml(
     let escaped_subscription = xml_escape(&subscription);
     let escaped_exe = xml_escape(exe_path);
 
+    let wake_trigger_block = if include_wake_triggers {
+        let wake_query = "<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]</Select></Query></QueryList>";
+        let escaped_wake = xml_escape(wake_query);
+        format!(
+            "\n    <EventTrigger>\n      <Enabled>true</Enabled>\n      <Subscription>{}</Subscription>\n    </EventTrigger>",
+            escaped_wake
+        )
+    } else {
+        String::new()
+    };
+
     let args_val = if delay_ms != DEFAULT_DELAY_MS {
         format!("restart --delay-ms {} --silent", delay_ms)
     } else {
@@ -343,14 +355,14 @@ pub fn generate_task_xml(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Earplugger - Auto-restart Voicemeeter audio engine on USB/KVM reconnect</Description>
+    <Description>Earplugger - Auto-restart Voicemeeter audio engine on USB/KVM reconnect or sleep resume</Description>
     <Author>Earplugger</Author>
   </RegistrationInfo>
   <Triggers>
     <EventTrigger>
       <Enabled>true</Enabled>
       <Subscription>{}</Subscription>
-    </EventTrigger>
+    </EventTrigger>{}
   </Triggers>
   <Principals>
     <Principal id="Author">{}
@@ -384,7 +396,7 @@ pub fn generate_task_xml(
     </Exec>
   </Actions>
 </Task>"#,
-        escaped_subscription, user_elem, time_limit_iso, escaped_exe, args_elem
+        escaped_subscription, wake_trigger_block, user_elem, time_limit_iso, escaped_exe, args_elem
     ))
 }
 
@@ -440,6 +452,7 @@ pub fn install_task(
     device_filter: Option<&str>,
     delay_ms: u64,
     user: Option<&str>,
+    include_wake_triggers: bool,
 ) -> Result<(), String> {
     // Ensure the Windows Audio Operational event channel is active
     enable_audio_operational_log()?;
@@ -449,7 +462,13 @@ pub fn install_task(
         .to_str()
         .ok_or_else(|| "Executable path contains non-UTF-8 characters".to_string())?;
 
-    let xml = generate_task_xml(exe_str, device_filter, delay_ms, user)?;
+    let xml = generate_task_xml(
+        exe_str,
+        device_filter,
+        delay_ms,
+        user,
+        include_wake_triggers,
+    )?;
 
     let utf16: Vec<u16> = xml.encode_utf16().collect();
     let mut bytes = Vec::with_capacity(utf16.len() * 2 + 2);
@@ -527,7 +546,8 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
         let out = decode_process_output(&output.stdout);
         let msg = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        let not_found = !task_file.exists()
+            || matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || msg.contains("0x80070002")
             || msg.to_ascii_lowercase().contains("cannot find")
             || msg.to_ascii_lowercase().contains("not find");
@@ -554,6 +574,10 @@ pub fn uninstall_task(disable_channel: bool) -> Result<(), String> {
 
 pub struct TaskStatusDetails {
     pub is_enabled: bool,
+    pub has_audio_trigger: bool,
+    pub audio_trigger_enabled: bool,
+    pub has_wake_trigger: bool,
+    pub wake_trigger_enabled: bool,
     pub xml_raw: String,
 }
 
@@ -567,8 +591,6 @@ fn find_tag_open(haystack: &str, tag_name: &str) -> Option<usize> {
             if ch == b'>' || ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n' || ch == b'/' {
                 return Some(idx);
             }
-        } else {
-            return Some(idx);
         }
         offset = idx + 1;
     }
@@ -591,11 +613,20 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
 
     // Extract <Settings> block to check task-level enabled status.
     // Use relative indexing, tag boundary checking, and bounds guards to support
-    // attribute-bearing tags (e.g. <Settings xmlns="...">) without slicing panics.
+    // attribute-bearing tags (e.g. <Settings xmlns="...">) and self-closing tags (<Settings ... />).
     let lower_xml = xml.to_ascii_lowercase();
     let settings_block = if let Some(start) = find_tag_open(&lower_xml, "<settings") {
-        if let Some(end_offset) = lower_xml[start..].find("</settings>") {
-            &xml[start..start + end_offset]
+        if let Some(tag_close) = lower_xml[start..].find('>') {
+            let tag_header = &lower_xml[start..start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                // Self-closing element (<Settings ... />); empty settings content
+                ""
+            } else if let Some(end_offset) = lower_xml[start + tag_close + 1..].find("</settings>")
+            {
+                &xml[start + tag_close + 1..start + tag_close + 1 + end_offset]
+            } else {
+                &xml[start + tag_close + 1..]
+            }
         } else {
             &xml[start..]
         }
@@ -621,19 +652,42 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         true
     };
 
-    // Also check trigger-level <Enabled> tag inside <EventTrigger>
-    let trigger_enabled = if let Some(t_start) = find_tag_open(&lower_xml, "<eventtrigger") {
-        if let Some(t_end) = lower_xml[t_start..].find("</eventtrigger>") {
-            let trigger_block = &lower_xml[t_start..t_start + t_end];
-            if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
-                if let Some(tag_close) = trigger_block[e_start..].find('>') {
-                    let content_start = e_start + tag_close + 1;
-                    if let Some(e_end) = trigger_block[content_start..].find("</enabled>") {
-                        let val = trigger_block[content_start..content_start + e_end].trim();
-                        val != "false" && val != "0"
-                    } else {
-                        true
-                    }
+    let mut has_audio_trigger = false;
+    let mut audio_trigger_enabled = false;
+    let mut has_wake_trigger = false;
+    let mut wake_trigger_enabled = false;
+    let mut any_trigger_enabled = false;
+    let mut has_any_trigger = false;
+
+    let mut cursor = 0;
+    while let Some(rel_start) = find_tag_open(&lower_xml[cursor..], "<eventtrigger") {
+        let t_start = cursor + rel_start;
+        let (trigger_block, t_end) = if let Some(tag_close) = lower_xml[t_start..].find('>') {
+            let tag_header = &lower_xml[t_start..t_start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                // Self-closing <EventTrigger ... /> has no child elements or subscription
+                ("", t_start + tag_close + 1)
+            } else if let Some(end) = lower_xml[t_start + tag_close + 1..].find("</eventtrigger>") {
+                let content_end = t_start + tag_close + 1 + end;
+                (
+                    &lower_xml[t_start..content_end + "</eventtrigger>".len()],
+                    content_end + "</eventtrigger>".len(),
+                )
+            } else {
+                (&lower_xml[t_start..], lower_xml.len())
+            }
+        } else {
+            (&lower_xml[t_start..], lower_xml.len())
+        };
+
+        has_any_trigger = true;
+
+        let trig_enabled = if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
+            if let Some(tag_close) = trigger_block[e_start..].find('>') {
+                let content_start = e_start + tag_close + 1;
+                if let Some(e_end) = trigger_block[content_start..].find("</enabled>") {
+                    let val = trigger_block[content_start..content_start + e_end].trim();
+                    val != "false" && val != "0"
                 } else {
                     true
                 }
@@ -642,15 +696,42 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
             }
         } else {
             true
-        }
-    } else {
-        true
-    };
+        };
 
-    let is_enabled = settings_enabled && trigger_enabled;
+        let is_audio = trigger_block.contains("microsoft-windows-audio");
+        let is_wake = trigger_block.contains("microsoft-windows-power-troubleshooter")
+            || trigger_block.contains("microsoft-windows-kernel-power");
+
+        if is_audio {
+            has_audio_trigger = true;
+            if trig_enabled {
+                audio_trigger_enabled = true;
+            }
+        }
+        if is_wake {
+            has_wake_trigger = true;
+            if trig_enabled {
+                wake_trigger_enabled = true;
+            }
+        }
+        if trig_enabled {
+            any_trigger_enabled = true;
+        }
+
+        cursor = t_end;
+        if cursor >= lower_xml.len() {
+            break;
+        }
+    }
+
+    let is_enabled = settings_enabled && (!has_any_trigger || any_trigger_enabled);
 
     TaskStatusDetails {
         is_enabled,
+        has_audio_trigger,
+        audio_trigger_enabled,
+        has_wake_trigger,
+        wake_trigger_enabled,
         xml_raw: xml,
     }
 }
@@ -675,7 +756,8 @@ pub fn query_task_status() -> Result<Option<TaskStatusDetails>, String> {
         let out = decode_process_output(&output.stdout);
         let combined = format!("{} {}", out, err).trim().to_string();
 
-        let not_found = matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        let not_found = !task_file.exists()
+            || matches!(fs::metadata(&task_file), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
             || combined.contains("0x80070002")
             || combined.to_ascii_lowercase().contains("cannot find")
             || combined.to_ascii_lowercase().contains("not find");
@@ -738,6 +820,7 @@ mod tests {
             Some("RODE NT-USB"),
             150,
             None,
+            true,
         )
         .unwrap();
         // Command element must NOT contain quotes (&quot;)
@@ -749,8 +832,20 @@ mod tests {
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
         assert!(xml.contains("<ExecutionTimeLimit>PT30S</ExecutionTimeLimit>"));
+        // Wake trigger must be present when include_wake_triggers is true
+        assert!(xml.contains("Microsoft-Windows-Power-Troubleshooter"));
+        assert!(xml.contains("Microsoft-Windows-Kernel-Power"));
         // When user is None, UserId must NOT be emitted
         assert!(!xml.contains("<UserId>"));
+    }
+
+    #[test]
+    fn test_generate_task_xml_no_wake() {
+        let xml =
+            generate_task_xml(r"C:\earplugger.exe", Some("RODE NT-USB"), 150, None, false).unwrap();
+        assert!(!xml.contains("Microsoft-Windows-Power-Troubleshooter"));
+        assert!(!xml.contains("Microsoft-Windows-Kernel-Power"));
+        assert!(xml.contains("Microsoft-Windows-Audio/Operational"));
     }
 
     #[test]
@@ -760,6 +855,7 @@ mod tests {
             Some("Speakers (RODE NT-USB)"),
             150,
             None,
+            true,
         )
         .unwrap();
         // Must match both friendly name and extracted hardware name
@@ -775,6 +871,7 @@ mod tests {
             Some("Speakers (RODE NT-USB) (1)"),
             150,
             None,
+            true,
         )
         .unwrap();
         // Suffix "(1)" must be cleanly stripped when generating hardware name
@@ -787,6 +884,7 @@ mod tests {
             Some("Kopfhörer (Dynamisch) (RODE NT-USB)"),
             150,
             None,
+            true,
         )
         .unwrap();
         assert!(xml2.contains(
@@ -819,8 +917,8 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_custom_delay_and_user() {
-        let xml =
-            generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice")).unwrap();
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"), true)
+            .unwrap();
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
         assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
     }
@@ -873,7 +971,7 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_scaled_execution_time_limit() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None).unwrap();
+        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None, true).unwrap();
         assert!(xml.contains("<ExecutionTimeLimit>PT60S</ExecutionTimeLimit>"));
     }
 
@@ -900,6 +998,87 @@ mod tests {
         let trigger_disabled_xml = r#"<Task version="1.4"><Triggers><EventTrigger><Enabled>false</Enabled></EventTrigger></Triggers><Settings><Enabled>true</Enabled></Settings></Task>"#;
         let status = parse_task_xml_status(trigger_disabled_xml.as_bytes());
         assert!(!status.is_enabled);
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_multi_triggers() {
+        let multi_xml = r#"<Task version="1.4">
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;&lt;Select Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Audio&apos;] and (EventID=65)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;System&quot;&gt;&lt;Select Path=&quot;System&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Power-Troubleshooter&apos;] and (EventID=1)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"#;
+        let status = parse_task_xml_status(multi_xml.as_bytes());
+        assert!(status.is_enabled);
+        assert!(status.has_audio_trigger);
+        assert!(status.audio_trigger_enabled);
+        assert!(status.has_wake_trigger);
+        assert!(status.wake_trigger_enabled);
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_wake_only_and_partial_disabled() {
+        let wake_only = r#"<Task version="1.4">
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;System&quot;&gt;&lt;Select Path=&quot;System&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Kernel-Power&apos;] and (EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"#;
+        let status = parse_task_xml_status(wake_only.as_bytes());
+        assert!(status.is_enabled);
+        assert!(!status.has_audio_trigger);
+        assert!(!status.audio_trigger_enabled);
+        assert!(status.has_wake_trigger);
+        assert!(status.wake_trigger_enabled);
+
+        let wake_disabled = r#"<Task version="1.4">
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;&lt;Select Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Audio&apos;] and (EventID=65)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>false</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;System&quot;&gt;&lt;Select Path=&quot;System&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Kernel-Power&apos;] and (EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"#;
+        let status2 = parse_task_xml_status(wake_disabled.as_bytes());
+        assert!(status2.is_enabled);
+        assert!(status2.has_audio_trigger);
+        assert!(status2.audio_trigger_enabled);
+        assert!(status2.has_wake_trigger);
+        assert!(!status2.wake_trigger_enabled);
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_self_closing_tags() {
+        let xml = r#"<Task version="1.4">
+  <Triggers>
+    <EventTrigger id="dummy" />
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id=&quot;0&quot; Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;&lt;Select Path=&quot;Microsoft-Windows-Audio/Operational&quot;&gt;*[System[Provider[@Name=&apos;Microsoft-Windows-Audio&apos;] and (EventID=65)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Settings xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task" />
+</Task>"#;
+        let status = parse_task_xml_status(xml.as_bytes());
+        assert!(status.is_enabled);
+        assert!(status.has_audio_trigger);
+        assert!(status.audio_trigger_enabled);
+        assert!(!status.has_wake_trigger);
     }
 
     #[test]

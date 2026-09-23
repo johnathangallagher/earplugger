@@ -92,6 +92,8 @@ Options for 'install':
   --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
   --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
   --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
+  --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake               Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
   --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
@@ -100,6 +102,7 @@ Examples:
   earplugger restart
   earplugger install --device "RODE NT-USB"
   earplugger install
+  earplugger install --no-wake
   earplugger status
   earplugger uninstall --disable-channel
 "#
@@ -115,6 +118,8 @@ pub struct ParsedArgs {
     pub user: Option<String>,
     pub silent: bool,
     pub disable_channel: bool,
+    pub no_wake: bool,
+    pub wake_set: bool,
     pub help_requested: bool,
 }
 
@@ -125,6 +130,8 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut user: Option<String> = None;
     let mut silent = false;
     let mut disable_channel = false;
+    let mut no_wake = false;
+    let mut wake_set = false;
     let mut help_requested = false;
     let mut i = 0;
 
@@ -139,6 +146,14 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             i += 1;
         } else if arg == "--disable-channel" {
             disable_channel = true;
+            i += 1;
+        } else if arg == "--no-wake" {
+            no_wake = true;
+            wake_set = true;
+            i += 1;
+        } else if arg == "--wake" {
+            no_wake = false;
+            wake_set = true;
             i += 1;
         } else if arg == "--delay-ms" {
             if i + 1 >= args.len() {
@@ -233,6 +248,8 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
         user,
         silent,
         disable_channel,
+        no_wake,
+        wake_set,
         help_requested,
     })
 }
@@ -251,7 +268,7 @@ fn handle_restart(args: &[String]) {
         return;
     }
 
-    if opts.device.is_some() || opts.user.is_some() || opts.disable_channel {
+    if opts.device.is_some() || opts.user.is_some() || opts.disable_channel || opts.wake_set {
         eprintln!(
             "[earplugger] Error: Invalid options for 'restart'. Only --delay-ms and --silent are accepted."
         );
@@ -316,7 +333,7 @@ fn handle_install(args: &[String]) {
 
     if opts.silent || opts.disable_channel {
         eprintln!(
-            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, and --user are accepted."
+            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, --user, --no-wake, and --wake are accepted."
         );
         std::process::exit(1);
     }
@@ -374,11 +391,17 @@ fn handle_install(args: &[String]) {
     }
 
     let dev_str = device_name.as_deref();
+    let include_wake_triggers = !opts.no_wake;
     println!(
         "[*] Registering Task Scheduler trigger '{}'...",
         task::TASK_NAME
     );
-    match task::install_task(dev_str, opts.delay_ms, opts.user.as_deref()) {
+    match task::install_task(
+        dev_str,
+        opts.delay_ms,
+        opts.user.as_deref(),
+        include_wake_triggers,
+    ) {
         Ok(_) => {
             println!("[+] Successfully installed Task Scheduler event trigger!");
             println!("    Event Log : Microsoft-Windows-Audio/Operational");
@@ -388,12 +411,18 @@ fn handle_install(args: &[String]) {
             } else {
                 println!("    Filter    : Any active audio endpoint");
             }
+            if include_wake_triggers {
+                println!("    Wake Log  : System");
+                println!("    Wake IDs  : 1 (Power-Troubleshooter), 107/507 (Kernel-Power)");
+            } else {
+                println!("    Wake Triggers : Disabled (--no-wake)");
+            }
             if let Some(ref u) = opts.user {
                 println!("    User      : {}", u);
             }
             println!("    Delay     : {}ms settle time", opts.delay_ms);
             println!(
-                "\nEarplugger is now active. Switching your KVM will automatically resync Voicemeeter."
+                "\nEarplugger is now active. Switching your KVM or waking from sleep will automatically resync Voicemeeter."
             );
         }
         Err(e) => {
@@ -417,7 +446,12 @@ fn handle_uninstall(args: &[String]) {
         return;
     }
 
-    if opts.device.is_some() || opts.user.is_some() || opts.silent || opts.delay_ms_set {
+    if opts.device.is_some()
+        || opts.user.is_some()
+        || opts.silent
+        || opts.delay_ms_set
+        || opts.wake_set
+    {
         eprintln!(
             "[-] Error: Invalid options for 'uninstall'. Only --disable-channel is accepted."
         );
@@ -478,6 +512,7 @@ fn handle_status(args: &[String]) {
         || opts.silent
         || opts.disable_channel
         || opts.delay_ms_set
+        || opts.wake_set
     {
         eprintln!("[-] Error: 'status' takes no extra options.");
         std::process::exit(1);
@@ -515,6 +550,30 @@ fn handle_status(args: &[String]) {
                 "REGISTERED & READY"
             };
             println!("  Task status     : {}", status_desc);
+            println!(
+                "  Audio reconnect : {}",
+                if status.has_audio_trigger {
+                    if status.is_enabled && status.audio_trigger_enabled {
+                        "Event 65 (Active)"
+                    } else {
+                        "Event 65 (Disabled)"
+                    }
+                } else {
+                    "None"
+                }
+            );
+            println!(
+                "  Sleep/resume    : {}",
+                if status.has_wake_trigger {
+                    if status.is_enabled && status.wake_trigger_enabled {
+                        "Events 1, 107, 507 (Active)"
+                    } else {
+                        "Events 1, 107, 507 (Disabled)"
+                    }
+                } else {
+                    "None"
+                }
+            );
             println!("  XML definition  : Valid ({} bytes)", status.xml_raw.len());
         }
         Ok(None) => {
@@ -579,7 +638,58 @@ mod tests {
         assert_eq!(opts.delay_ms, DEFAULT_DELAY_MS);
         assert_eq!(opts.device, None);
         assert!(!opts.silent);
+        assert!(!opts.no_wake);
+        assert!(!opts.wake_set);
         assert!(!opts.help_requested);
+    }
+
+    #[test]
+    fn test_parse_options_no_wake_and_wake() {
+        let args_no_wake = vec!["--no-wake".to_string()];
+        let opts = parse_options(&args_no_wake).unwrap();
+        assert!(opts.no_wake);
+        assert!(opts.wake_set);
+
+        let args_wake = vec!["--no-wake".to_string(), "--wake".to_string()];
+        let opts2 = parse_options(&args_wake).unwrap();
+        assert!(!opts2.no_wake);
+        assert!(opts2.wake_set);
+
+        let args_only_wake = vec!["--wake".to_string()];
+        let opts3 = parse_options(&args_only_wake).unwrap();
+        assert!(!opts3.no_wake);
+        assert!(opts3.wake_set);
+    }
+
+    #[test]
+    fn test_wake_options_rejected_for_subcommands() {
+        let restart_opts = parse_options(&["--wake".to_string()]).unwrap();
+        assert!(restart_opts.wake_set);
+        assert!(
+            restart_opts.device.is_some()
+                || restart_opts.user.is_some()
+                || restart_opts.disable_channel
+                || restart_opts.wake_set
+        );
+
+        let uninstall_opts = parse_options(&["--no-wake".to_string()]).unwrap();
+        assert!(
+            uninstall_opts.device.is_some()
+                || uninstall_opts.user.is_some()
+                || uninstall_opts.silent
+                || uninstall_opts.delay_ms_set
+                || uninstall_opts.wake_set
+        );
+
+        let status_opts = parse_options(&["--wake".to_string()]).unwrap();
+        assert!(
+            status_opts.device.is_some()
+                || status_opts.user.is_some()
+                || status_opts.silent
+                || status_opts.disable_channel
+                || status_opts.delay_ms_set
+                || status_opts.wake_set
+        );
     }
 
     #[test]

@@ -1,16 +1,23 @@
 # Task Scheduler Internals & Event Subscriptions
 
-## Windows Event Log Channel
+## Windows Event Log Channels
 `earplugger` subscribes to:
-- **Channel**: `Microsoft-Windows-Audio/Operational`
-- **Provider**: `Microsoft-Windows-Audio`
-- **Event ID**: `65`
+1. **Audio Reconnect Trigger**:
+   - **Channel**: `Microsoft-Windows-Audio/Operational`
+   - **Provider**: `Microsoft-Windows-Audio`
+   - **Event ID**: `65` (Audio device state transition to ACTIVE)
+2. **Sleep / Resume Trigger** (enabled by default; toggleable via `--no-wake`):
+   - **Channel**: `System`
+   - **Providers & Event IDs**:
+     - `Microsoft-Windows-Power-Troubleshooter` (Event ID `1` — system returned from low power state)
+     - `Microsoft-Windows-Kernel-Power` (Event ID `107` / `507` — resume from sleep or modern standby)
 
 > [!NOTE]
-> On default installations of Windows 10 and Windows 11, this operational event channel is disabled. The `earplugger install` command automatically activates it using `%SystemRoot%\System32\wevtutil.exe sl Microsoft-Windows-Audio/Operational /e:true`.
+> On default installations of Windows 10 and Windows 11, the `Microsoft-Windows-Audio/Operational` event channel is disabled. The `earplugger install` command automatically activates it using `%SystemRoot%\System32\wevtutil.exe sl Microsoft-Windows-Audio/Operational /e:true`. The `System` channel is part of core Windows NT logging and is always active.
 
 ## Event Subscription XPath Structure
 
+### Audio Device Reconnect Subscription
 ```xml
 <QueryList>
   <Query Id="0" Path="Microsoft-Windows-Audio/Operational">
@@ -18,6 +25,16 @@
       *[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=65)]]
       and *[EventData[Data[@Name='DeviceName']='RODE NT-USB' and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]
     </Select>
+  </Query>
+</QueryList>
+```
+
+### Sleep / Wake Resume Subscription
+```xml
+<QueryList>
+  <Query Id="0" Path="System">
+    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select>
+    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]</Select>
   </Query>
 </QueryList>
 ```
