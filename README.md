@@ -1,7 +1,7 @@
 # earplugger
 
 > [!NOTE]
-> **Disclaimer:** This project was created and written by an AI / Large Language Model (LLM). While built and tested for reliability, please review the code and configuration before deploying in your environment.
+> **Disclaimer:** This majority of this project was written by a Large Language Model (LLM). While prompted, built, and tested for reliability, please take note of this before downloading and using this application. Constructive criticism is desired and greatly appreciated. I make no claims to be a bona fide Software Engineer nor pretend that this project makes me one.
 
 Automatically restarts the Voicemeeter audio engine when a USB audio device or KVM switch reconnects on Windows, when resuming from sleep, or after an audio driver / engine crash.
 
