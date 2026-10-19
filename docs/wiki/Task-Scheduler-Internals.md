@@ -64,6 +64,6 @@ Control characters (`< 0x20`) are stripped to preserve XML parser validity.
 ## Task Settings & Queuing
 - **MultipleInstancesPolicy**: `IgnoreNew`
   Ensures that if multiple consecutive endpoint reconnect signals fire (e.g. render and capture endpoints registering simultaneously upon KVM toggle), the in-flight run handles the restart after its settle delay while secondary triggers are dropped, eliminating restart storms.
-- **ExecutionTimeLimit**: Dynamically scaled based on `--delay-ms` (`PT30S` minimum for default 150ms delay, scaling up to `PT60S` for 30s delays to allow the full settle delay and Voicemeeter restart sequence to complete before termination).
+- **ExecutionTimeLimit**: Dynamically scaled based on `--delay-ms` and retry cycles (`PT32S` minimum for default 150ms delay with 3 cycles @ 1000ms, scaling up to accommodate configured delays and cycles to allow the full settle delay and multi-cycle Voicemeeter restart sequence to complete before termination).
 - **DisallowStartIfOnBatteries**: `false` (operates normally on laptops).
 - **RunLevel**: `LeastPrivilege` (runs under user logon context without elevated tokens).

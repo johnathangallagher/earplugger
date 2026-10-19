@@ -6,6 +6,8 @@ use std::process::Command;
 
 pub const TASK_NAME: &str = "Earplugger_AutoRestart";
 pub const DEFAULT_DELAY_MS: u64 = 150;
+pub const DEFAULT_CYCLES: u32 = 3;
+pub const DEFAULT_CYCLE_DELAY_MS: u64 = 1000;
 
 pub fn get_exe_path() -> Result<PathBuf, String> {
     env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {}", e))
@@ -386,6 +388,8 @@ pub fn generate_task_xml(
     exe_path: &str,
     device_filter: Option<&str>,
     delay_ms: u64,
+    cycles: u32,
+    cycle_delay_ms: u64,
     user: Option<&str>,
     include_wake_triggers: bool,
 ) -> Result<String, String> {
@@ -436,11 +440,18 @@ pub fn generate_task_xml(
         String::new()
     };
 
-    let args_val = if delay_ms != DEFAULT_DELAY_MS {
-        format!("restart --delay-ms {} --silent", delay_ms)
-    } else {
-        "restart --silent".to_string()
-    };
+    let mut args_parts = vec!["restart".to_string()];
+    if delay_ms != DEFAULT_DELAY_MS {
+        args_parts.push(format!("--delay-ms {}", delay_ms));
+    }
+    if cycles != DEFAULT_CYCLES {
+        args_parts.push(format!("--cycles {}", cycles));
+    }
+    if cycle_delay_ms != DEFAULT_CYCLE_DELAY_MS {
+        args_parts.push(format!("--cycle-delay-ms {}", cycle_delay_ms));
+    }
+    args_parts.push("--silent".to_string());
+    let args_val = args_parts.join(" ");
     let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
     let user_elem = match user {
@@ -456,11 +467,14 @@ pub fn generate_task_xml(
         None => String::new(),
     };
 
-    // Scale ExecutionTimeLimit to accommodate the configured delay plus a 30-second buffer.
-    // For default 150ms delay, this yields PT30S. For maximum 30,000ms delay, this yields PT60S,
-    // preventing Task Scheduler from forcefully terminating the process before Voicemeeter
-    // finishes restarting and drops FFI resources cleanly.
-    let time_limit_secs = ((delay_ms / 1000) + 30).max(30);
+    // Scale ExecutionTimeLimit to accommodate the configured delay, retry cycles, plus a 30-second buffer.
+    // For default 150ms delay with 3 cycles @ 1000ms, this yields PT32S.
+    let retry_time_secs = if cycles > 1 {
+        ((cycles as u64 - 1) * cycle_delay_ms + 999) / 1000
+    } else {
+        0
+    };
+    let time_limit_secs = ((delay_ms / 1000) + retry_time_secs + 30).max(30);
     let time_limit_iso = format!("PT{}S", time_limit_secs);
 
     Ok(format!(
@@ -563,6 +577,8 @@ impl Drop for TempFileGuard {
 pub fn install_task(
     device_filter: Option<&str>,
     delay_ms: u64,
+    cycles: u32,
+    cycle_delay_ms: u64,
     user: Option<&str>,
     include_wake_triggers: bool,
 ) -> Result<(), String> {
@@ -578,6 +594,8 @@ pub fn install_task(
         exe_str,
         device_filter,
         delay_ms,
+        cycles,
+        cycle_delay_ms,
         user,
         include_wake_triggers,
     )?;
@@ -938,6 +956,8 @@ mod tests {
             r"C:\Audio & Tools\earplugger.exe",
             Some("RODE NT-USB"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -950,7 +970,7 @@ mod tests {
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
-        assert!(xml.contains("<ExecutionTimeLimit>PT30S</ExecutionTimeLimit>"));
+        assert!(xml.contains("<ExecutionTimeLimit>PT32S</ExecutionTimeLimit>"));
         // Wake trigger must be present when include_wake_triggers is true
         assert!(xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(xml.contains("Microsoft-Windows-Kernel-Power"));
@@ -960,8 +980,16 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_no_wake() {
-        let xml =
-            generate_task_xml(r"C:\earplugger.exe", Some("RODE NT-USB"), 150, None, false).unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("RODE NT-USB"),
+            150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            false,
+        )
+        .unwrap();
         assert!(!xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(!xml.contains("Microsoft-Windows-Kernel-Power"));
         assert!(xml.contains("Microsoft-Windows-Audio/Operational"));
@@ -973,6 +1001,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Speakers (RODE NT-USB)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -989,6 +1019,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Speakers (RODE NT-USB) (1)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -1002,6 +1034,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Kopfhörer (Dynamisch) (RODE NT-USB)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -1026,7 +1060,16 @@ mod tests {
         );
         assert_eq!(clean_device_name(input), "RODE NT-USB");
 
-        let xml = generate_task_xml(r"C:\earplugger.exe", Some(input), 150, None, true).unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some(input),
+            150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            true,
+        )
+        .unwrap();
         assert!(xml.contains(
             "Data[@Name=&apos;DeviceName&apos;]=&apos;Sennheiser 560S (2- RODE NT-USB)&apos;"
         ));
@@ -1077,8 +1120,16 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_custom_delay_and_user() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"), true)
-            .unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            None,
+            200,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            Some("DOMAIN\\Alice"),
+            true,
+        )
+        .unwrap();
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
         assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
     }
@@ -1131,8 +1182,32 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_scaled_execution_time_limit() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None, true).unwrap();
-        assert!(xml.contains("<ExecutionTimeLimit>PT60S</ExecutionTimeLimit>"));
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            None,
+            30_000,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(xml.contains("<ExecutionTimeLimit>PT62S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn test_generate_task_xml_custom_cycles_and_delay() {
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("RODE NT-USB"),
+            1000,
+            5,
+            1500,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(xml.contains("<Arguments>restart --delay-ms 1000 --cycles 5 --cycle-delay-ms 1500 --silent</Arguments>"));
     }
 
     #[test]

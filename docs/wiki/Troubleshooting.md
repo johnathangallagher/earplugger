@@ -46,10 +46,14 @@ If your device has complex, driver-aliased, or user-customized friendly names (e
      earplugger install --device "*"
      ```
 
-### 3. Insufficient Settling Time
-Some USB audio interfaces (such as certain multi-channel interfaces or Bluetooth dongles) require longer handshake times to negotiate master sample rates. Increase the settling delay:
+### 3. Insufficient Settling Time or Slow USB Enumeration
+Some USB audio interfaces and DACs (such as RODE NT-USB or Sennheiser 560S) require longer handshake times or multiple initialization pulses to negotiate master sample rates and stabilize clock PLLs after sleep or KVM reconnect:
 ```powershell
-earplugger install --delay-ms 300
+# Increase initial settle delay:
+earplugger install --delay-ms 1000
+
+# Increase number of restart pulses and interval between pulses:
+earplugger install --delay-ms 1000 --cycles 5 --cycle-delay-ms 1500
 ```
 
 ### 4. Audio Driver / audiodg.exe Crash Recovery

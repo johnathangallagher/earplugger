@@ -24,4 +24,4 @@ VB-Audio Voicemeeter ties its internal processing bus and mixing loop directly t
 
 5. **Voicemeeter Remote C API Dynamic Invocation:**
    `earplugger` dynamically resolves the bitness-matched DLL (`VoicemeeterRemote64.dll` on 64-bit architectures, `VoicemeeterRemote.dll` on 32-bit) using `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH`.
-   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, `VBVMR_GetParameterStringW`, `VBVMR_IsParametersDirty`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory, polls for parameter consumption, and unloads the library cleanly via RAII Drop handlers.
+   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, `VBVMR_GetParameterStringW`, `VBVMR_IsParametersDirty`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory across a sequence of pulses (default: 3 cycles with 1000ms interval) while maintaining the login session and polling for parameter consumption across each cycle to guarantee slow-enumerating USB DACs acquire clean clock sync, and unloads the library cleanly via RAII Drop handlers.

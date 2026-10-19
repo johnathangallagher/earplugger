@@ -85,18 +85,22 @@ Commands:
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Millisecond delay to wait for USB handshake (default: 150, max: 30000)
-  --silent             Suppress interactive output (used by Task Scheduler)
+  --delay-ms <MS>          Millisecond delay to wait for USB handshake (default: 150, max: 30000)
+  --cycles <COUNT>         Number of restart pulses to issue (default: 3, max: 10, alias: --retries)
+  --cycle-delay-ms <MS>    Millisecond delay between restart cycles (default: 1000, max: 10000)
+  --silent                 Suppress interactive output (used by Task Scheduler)
 
 Options for 'install':
-  --device <NAME>      Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
-  --delay-ms <MS>      Millisecond delay to configure in the trigger (default: 150, max: 30000)
-  --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
-  --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
-  --wake               Enable triggers on system wake/resume from sleep
+  --device <NAME>          Device name filter (e.g. "RODE NT-USB"). If omitted, auto-detects A1.
+  --delay-ms <MS>          Millisecond delay to configure in the trigger (default: 150, max: 30000)
+  --cycles <COUNT>         Number of restart pulses to configure (default: 3, max: 10, alias: --retries)
+  --cycle-delay-ms <MS>    Millisecond delay between cycles to configure (default: 1000, max: 10000)
+  --user <USERNAME>        Target user for scheduled task (e.g. DOMAIN\User)
+  --no-wake                Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake                   Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
-  --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
+  --disable-channel        Also disable the Microsoft-Windows-Audio/Operational event channel
 
 Examples:
   earplugger restart
@@ -114,6 +118,10 @@ pub use task::clean_device_name;
 pub struct ParsedArgs {
     pub delay_ms: u64,
     pub delay_ms_set: bool,
+    pub cycles: u32,
+    pub cycles_set: bool,
+    pub cycle_delay_ms: u64,
+    pub cycle_delay_ms_set: bool,
     pub device: Option<String>,
     pub user: Option<String>,
     pub silent: bool,
@@ -126,6 +134,10 @@ pub struct ParsedArgs {
 pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     let mut delay_ms = DEFAULT_DELAY_MS;
     let mut delay_ms_set = false;
+    let mut cycles = task::DEFAULT_CYCLES;
+    let mut cycles_set = false;
+    let mut cycle_delay_ms = task::DEFAULT_CYCLE_DELAY_MS;
+    let mut cycle_delay_ms_set = false;
     let mut device: Option<String> = None;
     let mut user: Option<String> = None;
     let mut silent = false;
@@ -154,6 +166,64 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
         } else if arg == "--wake" {
             no_wake = false;
             wake_set = true;
+            i += 1;
+        } else if arg == "--cycles" || arg == "--retries" {
+            if i + 1 >= args.len() {
+                return Err(format!("Missing value for {}", arg));
+            }
+            let val = args[i + 1]
+                .parse::<u32>()
+                .map_err(|_| format!("Invalid integer value '{}' for {}", args[i + 1], arg))?;
+            if val == 0 || val > 10 {
+                return Err(format!(
+                    "Value {} for {} must be between 1 and 10",
+                    val, arg
+                ));
+            }
+            cycles = val;
+            cycles_set = true;
+            i += 2;
+        } else if let Some(val_str) = arg.strip_prefix("--cycles=").or_else(|| arg.strip_prefix("--retries=")) {
+            let val = val_str
+                .parse::<u32>()
+                .map_err(|_| format!("Invalid integer value '{}' for cycles", val_str))?;
+            if val == 0 || val > 10 {
+                return Err(format!(
+                    "Value {} for cycles must be between 1 and 10",
+                    val
+                ));
+            }
+            cycles = val;
+            cycles_set = true;
+            i += 1;
+        } else if arg == "--cycle-delay-ms" || arg == "--retry-delay-ms" {
+            if i + 1 >= args.len() {
+                return Err(format!("Missing value for {}", arg));
+            }
+            let val = args[i + 1]
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid integer value '{}' for {}", args[i + 1], arg))?;
+            if val > 10000 {
+                return Err(format!(
+                    "Cycle delay {}ms exceeds maximum allowed threshold of 10000ms",
+                    val
+                ));
+            }
+            cycle_delay_ms = val;
+            cycle_delay_ms_set = true;
+            i += 2;
+        } else if let Some(val_str) = arg.strip_prefix("--cycle-delay-ms=").or_else(|| arg.strip_prefix("--retry-delay-ms=")) {
+            let val = val_str
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid integer value '{}' for cycle delay", val_str))?;
+            if val > 10000 {
+                return Err(format!(
+                    "Cycle delay {}ms exceeds maximum allowed threshold of 10000ms",
+                    val
+                ));
+            }
+            cycle_delay_ms = val;
+            cycle_delay_ms_set = true;
             i += 1;
         } else if arg == "--delay-ms" {
             if i + 1 >= args.len() {
@@ -244,6 +314,10 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
     Ok(ParsedArgs {
         delay_ms,
         delay_ms_set,
+        cycles,
+        cycles_set,
+        cycle_delay_ms,
+        cycle_delay_ms_set,
         device,
         user,
         silent,
@@ -270,7 +344,7 @@ fn handle_restart(args: &[String]) {
 
     if opts.device.is_some() || opts.user.is_some() || opts.disable_channel || opts.wake_set {
         eprintln!(
-            "[earplugger] Error: Invalid options for 'restart'. Only --delay-ms and --silent are accepted."
+            "[earplugger] Error: Invalid options for 'restart'. Only --delay-ms, --cycles, --cycle-delay-ms, and --silent are accepted."
         );
         std::process::exit(1);
     }
@@ -296,7 +370,7 @@ fn handle_restart(args: &[String]) {
         std::thread::sleep(std::time::Duration::from_millis(opts.delay_ms));
     }
 
-    if let Err(e) = voicemeeter::restart_audio_engine(0) {
+    if let Err(e) = voicemeeter::restart_audio_engine(0, opts.cycles, opts.cycle_delay_ms, opts.silent) {
         // "Voicemeeter is not running" after the settle delay is a normal race condition:
         // the user may have closed Voicemeeter between the USB reconnect and the task firing.
         // Exit 0 in both silent and non-silent modes so Task Scheduler does not log a failure.
@@ -333,7 +407,7 @@ fn handle_install(args: &[String]) {
 
     if opts.silent || opts.disable_channel {
         eprintln!(
-            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, --user, --no-wake, and --wake are accepted."
+            "[-] Error: Invalid options for 'install'. Only --device, --delay-ms, --cycles, --cycle-delay-ms, --user, --no-wake, and --wake are accepted."
         );
         std::process::exit(1);
     }
@@ -417,6 +491,8 @@ fn handle_install(args: &[String]) {
     match task::install_task(
         dev_str,
         opts.delay_ms,
+        opts.cycles,
+        opts.cycle_delay_ms,
         opts.user.as_deref(),
         include_wake_triggers,
     ) {
@@ -439,6 +515,12 @@ fn handle_install(args: &[String]) {
                 println!("    User      : {}", u);
             }
             println!("    Delay     : {}ms settle time", opts.delay_ms);
+            if opts.cycles > 1 {
+                println!(
+                    "    Cycles    : {} pulses ({}ms interval)",
+                    opts.cycles, opts.cycle_delay_ms
+                );
+            }
             println!(
                 "\nEarplugger is now active. Switching your KVM or waking from sleep will automatically resync Voicemeeter."
             );
@@ -469,6 +551,8 @@ fn handle_uninstall(args: &[String]) {
         || opts.silent
         || opts.delay_ms_set
         || opts.wake_set
+        || opts.cycles_set
+        || opts.cycle_delay_ms_set
     {
         eprintln!(
             "[-] Error: Invalid options for 'uninstall'. Only --disable-channel is accepted."
@@ -531,6 +615,8 @@ fn handle_status(args: &[String]) {
         || opts.disable_channel
         || opts.delay_ms_set
         || opts.wake_set
+        || opts.cycles_set
+        || opts.cycle_delay_ms_set
     {
         eprintln!("[-] Error: 'status' takes no extra options.");
         std::process::exit(1);
@@ -660,10 +746,58 @@ mod tests {
         let opts = parse_options(&args).unwrap();
         assert_eq!(opts.delay_ms, DEFAULT_DELAY_MS);
         assert_eq!(opts.device, None);
+        assert_eq!(opts.cycles, task::DEFAULT_CYCLES);
+        assert_eq!(opts.cycle_delay_ms, task::DEFAULT_CYCLE_DELAY_MS);
         assert!(!opts.silent);
         assert!(!opts.no_wake);
         assert!(!opts.wake_set);
+        assert!(!opts.cycles_set);
+        assert!(!opts.cycle_delay_ms_set);
         assert!(!opts.help_requested);
+    }
+
+    #[test]
+    fn test_parse_options_cycles_and_delay() {
+        let args_space = vec![
+            "--cycles".to_string(),
+            "5".to_string(),
+            "--cycle-delay-ms".to_string(),
+            "1500".to_string(),
+        ];
+        let opts = parse_options(&args_space).unwrap();
+        assert_eq!(opts.cycles, 5);
+        assert!(opts.cycles_set);
+        assert_eq!(opts.cycle_delay_ms, 1500);
+        assert!(opts.cycle_delay_ms_set);
+
+        let args_equals = vec![
+            "--cycles=4".to_string(),
+            "--cycle-delay-ms=2000".to_string(),
+        ];
+        let opts2 = parse_options(&args_equals).unwrap();
+        assert_eq!(opts2.cycles, 4);
+        assert!(opts2.cycles_set);
+        assert_eq!(opts2.cycle_delay_ms, 2000);
+        assert!(opts2.cycle_delay_ms_set);
+
+        let args_aliases = vec![
+            "--retries=2".to_string(),
+            "--retry-delay-ms=800".to_string(),
+        ];
+        let opts3 = parse_options(&args_aliases).unwrap();
+        assert_eq!(opts3.cycles, 2);
+        assert!(opts3.cycles_set);
+        assert_eq!(opts3.cycle_delay_ms, 800);
+        assert!(opts3.cycle_delay_ms_set);
+    }
+
+    #[test]
+    fn test_parse_options_cycles_bounds() {
+        assert!(parse_options(&["--cycles=0".to_string()]).is_err());
+        assert!(parse_options(&["--cycles=11".to_string()]).is_err());
+        assert!(parse_options(&["--retries".to_string(), "0".to_string()]).is_err());
+        assert!(parse_options(&["--cycle-delay-ms=10001".to_string()]).is_err());
+        assert!(parse_options(&["--retry-delay-ms".to_string(), "15000".to_string()]).is_err());
     }
 
     #[test]
