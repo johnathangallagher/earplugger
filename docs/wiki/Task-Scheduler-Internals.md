@@ -12,7 +12,12 @@
    - **Channel**: `System`
    - **Providers & Event IDs**:
      - `Microsoft-Windows-Power-Troubleshooter` (Event ID `1` — system returned from low power state)
-     - `Microsoft-Windows-Kernel-Power` (Event ID `107` / `507` — resume from sleep or modern standby)
+     - `Microsoft-Windows-Kernel-Power` (Event IDs `107`, `507`, and `566` — resume from sleep, modern standby, or display signal return)
+3. **Session Unlock & KVM Console Connect Trigger** (enabled by default; toggleable via `--no-wake`):
+   - **Trigger Type**: `<SessionStateChangeTrigger>`
+   - **Events**:
+     - `SessionUnlock` — user unlocks workstation upon returning to desk
+     - `ConsoleConnect` — user flips KVM switch console back to this PC
 
 > [!NOTE]
 > On default installations of Windows 10 and Windows 11, the `Microsoft-Windows-Audio/Operational` event channel is disabled. The `earplugger install` command automatically activates it using `%SystemRoot%\System32\wevtutil.exe sl Microsoft-Windows-Audio/Operational /e:true`. The `System` channel is part of core Windows NT logging and is always active.
@@ -40,9 +45,21 @@ The query subscribes to both device reconnects (`EventID=65`) and Windows Audio 
 <QueryList>
   <Query Id="0" Path="System">
     <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select>
-    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]</Select>
+    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507 or EventID=566)]]</Select>
   </Query>
 </QueryList>
+```
+
+### Workstation Unlock & KVM Console Connect Triggers
+```xml
+<SessionStateChangeTrigger>
+  <Enabled>true</Enabled>
+  <StateChange>SessionUnlock</StateChange>
+</SessionStateChangeTrigger>
+<SessionStateChangeTrigger>
+  <Enabled>true</Enabled>
+  <StateChange>ConsoleConnect</StateChange>
+</SessionStateChangeTrigger>
 ```
 
 ### XPath Literal Sanitization & Multi-Candidate Matching

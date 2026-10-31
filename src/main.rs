@@ -183,15 +183,15 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             cycles = val;
             cycles_set = true;
             i += 2;
-        } else if let Some(val_str) = arg.strip_prefix("--cycles=").or_else(|| arg.strip_prefix("--retries=")) {
+        } else if let Some(val_str) = arg
+            .strip_prefix("--cycles=")
+            .or_else(|| arg.strip_prefix("--retries="))
+        {
             let val = val_str
                 .parse::<u32>()
                 .map_err(|_| format!("Invalid integer value '{}' for cycles", val_str))?;
             if val == 0 || val > 10 {
-                return Err(format!(
-                    "Value {} for cycles must be between 1 and 10",
-                    val
-                ));
+                return Err(format!("Value {} for cycles must be between 1 and 10", val));
             }
             cycles = val;
             cycles_set = true;
@@ -212,7 +212,10 @@ pub fn parse_options(args: &[String]) -> Result<ParsedArgs, String> {
             cycle_delay_ms = val;
             cycle_delay_ms_set = true;
             i += 2;
-        } else if let Some(val_str) = arg.strip_prefix("--cycle-delay-ms=").or_else(|| arg.strip_prefix("--retry-delay-ms=")) {
+        } else if let Some(val_str) = arg
+            .strip_prefix("--cycle-delay-ms=")
+            .or_else(|| arg.strip_prefix("--retry-delay-ms="))
+        {
             let val = val_str
                 .parse::<u64>()
                 .map_err(|_| format!("Invalid integer value '{}' for cycle delay", val_str))?;
@@ -370,7 +373,9 @@ fn handle_restart(args: &[String]) {
         std::thread::sleep(std::time::Duration::from_millis(opts.delay_ms));
     }
 
-    if let Err(e) = voicemeeter::restart_audio_engine(0, opts.cycles, opts.cycle_delay_ms, opts.silent) {
+    if let Err(e) =
+        voicemeeter::restart_audio_engine(0, opts.cycles, opts.cycle_delay_ms, opts.silent)
+    {
         // "Voicemeeter is not running" after the settle delay is a normal race condition:
         // the user may have closed Voicemeeter between the USB reconnect and the task firing.
         // Exit 0 in both silent and non-silent modes so Task Scheduler does not log a failure.
@@ -507,7 +512,10 @@ fn handle_install(args: &[String]) {
             }
             if include_wake_triggers {
                 println!("    Wake Log  : System");
-                println!("    Wake IDs  : 1 (Power-Troubleshooter), 107/507 (Kernel-Power)");
+                println!("    Wake IDs  : 1 (Power-Troubleshooter), 107/507/566 (Kernel-Power)");
+                println!(
+                    "    Session   : SessionUnlock, ConsoleConnect (KVM / Workstation unlock)"
+                );
             } else {
                 println!("    Wake Triggers : Disabled (--no-wake)");
             }
@@ -675,9 +683,21 @@ fn handle_status(args: &[String]) {
                 "  Sleep/resume    : {}",
                 if status.has_wake_trigger {
                     if status.is_enabled && status.wake_trigger_enabled {
-                        "Events 1, 107, 507 (Active)"
+                        "Events 1, 107, 507, 566 (Active)"
                     } else {
-                        "Events 1, 107, 507 (Disabled)"
+                        "Events 1, 107, 507, 566 (Disabled)"
+                    }
+                } else {
+                    "None"
+                }
+            );
+            println!(
+                "  Session / KVM   : {}",
+                if status.has_session_trigger {
+                    if status.is_enabled && status.session_trigger_enabled {
+                        "SessionUnlock, ConsoleConnect (Active)"
+                    } else {
+                        "SessionUnlock, ConsoleConnect (Disabled)"
                     }
                 } else {
                     "None"

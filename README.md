@@ -48,8 +48,8 @@ sequenceDiagram
     EP-->>Task: Exits cleanly
 ```
 
-1. **Event triggers:** Subscribes to device reconnects (`Event ID 65`) and audio engine / driver crashes (`Event ID 4`) in `Microsoft-Windows-Audio/Operational`, plus system sleep/wake resume events in `System` (`Power-Troubleshooter Event ID 1`, `Kernel-Power Event IDs 107 & 507`).
-2. **Multi-candidate device filter:** Automatically generates an XPath `OR` filter matching full friendly names (`"Sennheiser 560S (2- RODE NT-USB)"`), bare hardware names (`"RODE NT-USB"`), custom user renames (`"Sennheiser 560S"`), and endpoint instance prefixes (`"2- RODE NT-USB"`), guaranteeing trigger activation regardless of how Windows formats Event 65.
+1. **Event triggers:** Subscribes to device reconnects (`Event ID 65`) and audio engine / driver crashes (`Event ID 4`) in `Microsoft-Windows-Audio/Operational`, system sleep/wake resume events in `System` (`Power-Troubleshooter Event ID 1`, `Kernel-Power Event IDs 107, 507, 566`), and workstation unlock / KVM switch console transitions (`SessionUnlock`, `ConsoleConnect`).
+2. **Multi-candidate device filter:** Automatically generates an XPath `OR` filter matching full friendly names (`"Sennheiser 560S (2- RODE NT-USB)"`), bare hardware names (`"RODE NT-USB"`), custom user renames (`"Sennheiser 560S"`), and endpoint instance prefixes (`"2- RODE NT-USB"`), or wildcard mode (`--device "*"`) to catch all active audio endpoints.
 3. **Handshake debounce & multi-stage pulse:** Pauses for a configurable initial settle delay (default: 150ms) and issues multiple restart pulses (default: 3 cycles, 1000ms interval) to allow USB DAC clocks and WASAPI endpoint descriptor negotiations to stabilize cleanly.
 4. **Native IPC:** Connects directly to Voicemeeter's shared memory API (`VoicemeeterRemote64.dll` or `VoicemeeterRemote.dll`), sets `Command.Restart = 1.0`, confirms the command was received across each pulse, and unloads.
 

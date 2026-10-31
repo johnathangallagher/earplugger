@@ -430,10 +430,10 @@ pub fn generate_task_xml(
     let escaped_exe = xml_escape(exe_path);
 
     let wake_trigger_block = if include_wake_triggers {
-        let wake_query = "<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]</Select></Query></QueryList>";
+        let wake_query = "<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507 or EventID=566)]]</Select></Query></QueryList>";
         let escaped_wake = xml_escape(wake_query);
         format!(
-            "\n    <EventTrigger>\n      <Enabled>true</Enabled>\n      <Subscription>{}</Subscription>\n    </EventTrigger>",
+            "\n    <EventTrigger>\n      <Enabled>true</Enabled>\n      <Subscription>{}</Subscription>\n    </EventTrigger>\n    <SessionStateChangeTrigger>\n      <Enabled>true</Enabled>\n      <StateChange>SessionUnlock</StateChange>\n    </SessionStateChangeTrigger>\n    <SessionStateChangeTrigger>\n      <Enabled>true</Enabled>\n      <StateChange>ConsoleConnect</StateChange>\n    </SessionStateChangeTrigger>",
             escaped_wake
         )
     } else {
@@ -709,6 +709,8 @@ pub struct TaskStatusDetails {
     pub has_engine_crash_trigger: bool,
     pub has_wake_trigger: bool,
     pub wake_trigger_enabled: bool,
+    pub has_session_trigger: bool,
+    pub session_trigger_enabled: bool,
     pub xml_raw: String,
 }
 
@@ -860,6 +862,61 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         }
     }
 
+    let mut has_session_trigger = false;
+    let mut session_trigger_enabled = false;
+
+    cursor = 0;
+    while let Some(rel_start) = find_tag_open(&lower_xml[cursor..], "<sessionstatechangetrigger") {
+        let t_start = cursor + rel_start;
+        let (trigger_block, t_end) = if let Some(tag_close) = lower_xml[t_start..].find('>') {
+            let tag_header = &lower_xml[t_start..t_start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                ("", t_start + tag_close + 1)
+            } else if let Some(end) =
+                lower_xml[t_start + tag_close + 1..].find("</sessionstatechangetrigger>")
+            {
+                let content_end = t_start + tag_close + 1 + end;
+                (
+                    &lower_xml[t_start..content_end + "</sessionstatechangetrigger>".len()],
+                    content_end + "</sessionstatechangetrigger>".len(),
+                )
+            } else {
+                (&lower_xml[t_start..], lower_xml.len())
+            }
+        } else {
+            (&lower_xml[t_start..], lower_xml.len())
+        };
+
+        has_any_trigger = true;
+        has_session_trigger = true;
+
+        let trig_enabled = if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
+            if let Some(tag_close) = trigger_block[e_start..].find('>') {
+                let content_start = e_start + tag_close + 1;
+                if let Some(e_end) = trigger_block[content_start..].find("</enabled>") {
+                    let val = trigger_block[content_start..content_start + e_end].trim();
+                    val != "false" && val != "0"
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if trig_enabled {
+            session_trigger_enabled = true;
+            any_trigger_enabled = true;
+        }
+
+        cursor = t_end;
+        if cursor >= lower_xml.len() {
+            break;
+        }
+    }
+
     let is_enabled = settings_enabled && (!has_any_trigger || any_trigger_enabled);
 
     TaskStatusDetails {
@@ -869,6 +926,8 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         has_engine_crash_trigger,
         has_wake_trigger,
         wake_trigger_enabled,
+        has_session_trigger,
+        session_trigger_enabled,
         xml_raw: xml,
     }
 }
@@ -971,9 +1030,12 @@ mod tests {
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
         assert!(xml.contains("<ExecutionTimeLimit>PT32S</ExecutionTimeLimit>"));
-        // Wake trigger must be present when include_wake_triggers is true
+        // Wake and session triggers must be present when include_wake_triggers is true
         assert!(xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(xml.contains("Microsoft-Windows-Kernel-Power"));
+        assert!(xml.contains("EventID=566"));
+        assert!(xml.contains("<StateChange>SessionUnlock</StateChange>"));
+        assert!(xml.contains("<StateChange>ConsoleConnect</StateChange>"));
         // When user is None, UserId must NOT be emitted
         assert!(!xml.contains("<UserId>"));
     }
@@ -992,6 +1054,7 @@ mod tests {
         .unwrap();
         assert!(!xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(!xml.contains("Microsoft-Windows-Kernel-Power"));
+        assert!(!xml.contains("<SessionStateChangeTrigger>"));
         assert!(xml.contains("Microsoft-Windows-Audio/Operational"));
     }
 
@@ -1331,5 +1394,26 @@ mod tests {
             "Focusrite: Line In"
         );
         assert_eq!(strip_driver_prefix("RODE NT-USB"), "RODE NT-USB");
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_session_trigger() {
+        let session_xml = r#"<Task version="1.4">
+  <Triggers>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>SessionUnlock</StateChange>
+    </SessionStateChangeTrigger>
+    <SessionStateChangeTrigger>
+      <Enabled>false</Enabled>
+      <StateChange>ConsoleConnect</StateChange>
+    </SessionStateChangeTrigger>
+  </Triggers>
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"#;
+        let status = parse_task_xml_status(session_xml.as_bytes());
+        assert!(status.is_enabled);
+        assert!(status.has_session_trigger);
+        assert!(status.session_trigger_enabled);
     }
 }

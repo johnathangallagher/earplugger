@@ -61,11 +61,12 @@ earplugger install --delay-ms 1000 --cycles 5 --cycle-delay-ms 1500
 - If audio becomes distorted without a physical reconnect, inspect Event Viewer under `Microsoft-Windows-Audio/Operational` for Event ID 4 (`Windows Audio Device Graph Isolation` error).
 - Ensure `earplugger status` reports `Audio reconnect : Events 65, 4 (Active)`.
 
-### 5. Sleep & Modern Standby Wake Triggers
-By default, `earplugger` registers wake triggers on `System` channel events:
-- `Microsoft-Windows-Power-Troubleshooter` (Event ID 1)
-- `Microsoft-Windows-Kernel-Power` (Event IDs 107 and 507)
-- If your system uses Modern Standby (S0 Low Power Idle) and audio does not restart on wake, ensure `earplugger status` reports `Sleep/resume : Events 1, 107, 507 (Active)`. If previously installed with `--no-wake`, re-enable with:
+### 5. Sleep, Standby, & Workstation Unlock Triggers
+By default, `earplugger` registers wake and session transition triggers:
+- `Microsoft-Windows-Power-Troubleshooter` (Event ID 1 — system wake)
+- `Microsoft-Windows-Kernel-Power` (Event IDs 107, 507, and 566 — wake, modern standby, display signal resume)
+- Session state change triggers (`SessionUnlock` upon unlocking desktop, `ConsoleConnect` upon KVM switch toggle)
+- Ensure `earplugger status` reports both `Sleep/resume : Events 1, 107, 507, 566 (Active)` and `Session / KVM : SessionUnlock, ConsoleConnect (Active)`. If previously installed with `--no-wake`, re-enable with:
   ```powershell
   earplugger install --wake
   ```
