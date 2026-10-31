@@ -470,7 +470,7 @@ pub fn generate_task_xml(
     // Scale ExecutionTimeLimit to accommodate the configured delay, retry cycles, plus a 30-second buffer.
     // For default 150ms delay with 3 cycles @ 1000ms, this yields PT32S.
     let retry_time_secs = if cycles > 1 {
-        ((cycles as u64 - 1) * cycle_delay_ms + 999) / 1000
+        ((cycles as u64 - 1) * cycle_delay_ms).div_ceil(1000)
     } else {
         0
     };
