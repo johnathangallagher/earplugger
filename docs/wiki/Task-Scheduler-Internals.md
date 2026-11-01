@@ -30,7 +30,7 @@
   <Query Id="0" Path="Microsoft-Windows-Audio/Operational">
     <Select Path="Microsoft-Windows-Audio/Operational">
       *[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=65)]]
-      and *[EventData[(Data[@Name='DeviceName']='Sennheiser 560S (2- RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB' or Data[@Name='DeviceName']='2- RODE NT-USB' or Data[@Name='DeviceName']='Sennheiser 560S') and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]
+      and *[EventData[(Data[@Name='DeviceName']='Sennheiser 560S (2- RODE NT-USB)' or Data[@Name='DeviceName']='RODE NT-USB' or Data[@Name='DeviceName']='2- RODE NT-USB' or Data[@Name='DeviceName']='Sennheiser 560S') and (Data[@Name='flow']='0' or Data[@Name='flow']='1')]]
     </Select>
     <Select Path="Microsoft-Windows-Audio/Operational">
       *[System[Provider[@Name='Microsoft-Windows-Audio'] and (EventID=4)]]
@@ -79,8 +79,8 @@ This guarantees trigger activation regardless of whether Windows MMDevAPI logs t
 Control characters (`< 0x20`) are stripped to preserve XML parser validity.
 
 ## Task Settings & Queuing
-- **MultipleInstancesPolicy**: `IgnoreNew`
-  Ensures that if multiple consecutive endpoint reconnect signals fire (e.g. render and capture endpoints registering simultaneously upon KVM toggle), the in-flight run handles the restart after its settle delay while secondary triggers are dropped, eliminating restart storms.
+- **MultipleInstancesPolicy**: `StopExisting`
+  Acts as an automatic hardware debouncer. If rapid bursts of endpoint re-enumeration events fire (e.g. monitor sleep/wake, KVM toggle, or multiple render/capture endpoints registering in quick succession), each subsequent event terminates the pending instance and resets the settle delay timer. This guarantees Voicemeeter restarts only once, after the final audio device has completely settled.
 - **ExecutionTimeLimit**: Dynamically scaled based on `--delay-ms` and retry cycles (`PT32S` minimum for default 150ms delay with 3 cycles @ 1000ms, scaling up to accommodate configured delays and cycles to allow the full settle delay and multi-cycle Voicemeeter restart sequence to complete before termination).
 - **DisallowStartIfOnBatteries**: `false` (operates normally on laptops).
 - **RunLevel**: `LeastPrivilege` (runs under user logon context without elevated tokens).

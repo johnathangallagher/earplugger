@@ -397,11 +397,11 @@ pub fn generate_task_xml(
         Some(dev) => {
             let variants = extract_device_variants(dev);
             if variants.is_empty() {
-                " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
+                " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1')]]".to_string()
             } else if variants.len() == 1 {
                 let formatted = format_xpath_string_literal(&variants[0])?;
                 format!(
-                    " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1')]]",
                     formatted
                 )
             } else {
@@ -411,14 +411,12 @@ pub fn generate_task_xml(
                     terms.push(format!("Data[@Name='DeviceName']={}", formatted));
                 }
                 format!(
-                    " and *[EventData[({}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    " and *[EventData[({}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1')]]",
                     terms.join(" or ")
                 )
             }
         }
-        None => {
-            " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
-        }
+        None => " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1')]]".to_string(),
     };
 
     let subscription = format!(
@@ -497,7 +495,7 @@ pub fn generate_task_xml(
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -1025,7 +1023,7 @@ mod tests {
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
-        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>"));
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));

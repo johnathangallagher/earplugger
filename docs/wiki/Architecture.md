@@ -9,7 +9,7 @@ VB-Audio Voicemeeter ties its internal processing bus and mixing loop directly t
 ## Execution Flow
 
 1. **System & Audio Subsystem State Transitions:**
-   - **Audio Reconnect**: Windows MMDevAPI records Event ID 65 under `Microsoft-Windows-Audio/Operational` (`flow`: `0` for Render, `1` for Capture; `NewState`: `1` for `DEVICE_STATE_ACTIVE`).
+   - **Audio Reconnect**: Windows MMDevAPI records Event ID 65 under `Microsoft-Windows-Audio/Operational` (`flow`: `0` for Render, `1` for Capture across any state transition including active, unplugged, disabled, or not-present).
    - **Driver / Engine Crash**: Windows records Event ID 4 under `Microsoft-Windows-Audio/Operational` when `audiodg.exe` or an audio driver encounters an error condition.
    - **Sleep / Resume**: Windows records Event ID 1 under `System` (`Microsoft-Windows-Power-Troubleshooter`) or Event IDs 107/507 (`Microsoft-Windows-Kernel-Power`).
 
