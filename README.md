@@ -43,15 +43,15 @@ sequenceDiagram
     Win->>Task: Event trigger fires
     Task->>EP: Runs earplugger restart (windowless)
     EP->>EP: Waits 150ms for USB handshake to settle
-    EP->>VM: Native IPC restart via VoicemeeterRemote64.dll
+    EP->>VM: Native IPC multi-cycle pulses (3 cycles, 1000ms apart) via VoicemeeterRemote64.dll
     VM->>VM: Audio engine restarts & resyncs A1 clock
     EP-->>Task: Exits cleanly
 ```
 
-1. **Event triggers:** Subscribes to device reconnects (`Event ID 65`) and audio engine / driver crashes (`Event ID 4`) in `Microsoft-Windows-Audio/Operational`, plus system sleep/wake resume events in `System` (`Power-Troubleshooter Event ID 1`, `Kernel-Power Event IDs 107 & 507`).
-2. **Multi-candidate device filter:** Automatically generates an XPath `OR` filter matching full friendly names (`"Sennheiser 560S (2- RODE NT-USB)"`), bare hardware names (`"RODE NT-USB"`), custom user renames (`"Sennheiser 560S"`), and endpoint instance prefixes (`"2- RODE NT-USB"`), guaranteeing trigger activation regardless of how Windows formats Event 65.
-3. **Handshake debounce:** Pauses for a configurable 150ms so Windows audio drivers finish enumerating before restarting the engine.
-4. **Native IPC:** Connects directly to Voicemeeter's shared memory API (`VoicemeeterRemote64.dll` or `VoicemeeterRemote.dll`), sets `Command.Restart = 1.0`, confirms the command was received, and unloads.
+1. **Event triggers:** Subscribes to device reconnects (`Event ID 65`) and audio engine / driver crashes (`Event ID 4`) in `Microsoft-Windows-Audio/Operational`, system sleep/wake resume events in `System` (`Power-Troubleshooter Event ID 1`, `Kernel-Power Event IDs 107, 507, 566`), and workstation unlock / KVM switch console transitions (`SessionUnlock`, `ConsoleConnect`).
+2. **Multi-candidate device filter:** Automatically generates an XPath `OR` filter matching full friendly names (`"Sennheiser 560S (2- RODE NT-USB)"`), bare hardware names (`"RODE NT-USB"`), custom user renames (`"Sennheiser 560S"`), and endpoint instance prefixes (`"2- RODE NT-USB"`), or wildcard mode (`--device "*"`) to catch all active audio endpoints.
+3. **Handshake debounce & multi-stage pulse:** Pauses for a configurable initial settle delay (default: 150ms) and issues multiple restart pulses (default: 3 cycles, 1000ms interval) to allow USB DAC clocks and WASAPI endpoint descriptor negotiations to stabilize cleanly.
+4. **Native IPC:** Connects directly to Voicemeeter's shared memory API (`VoicemeeterRemote64.dll` or `VoicemeeterRemote.dll`), sets `Command.Restart = 1.0`, confirms the command was received across each pulse, and unloads.
 
 ---
 
@@ -91,6 +91,9 @@ earplugger.exe install --device "RODE NT-USB"
 # Change the post-reconnect settling delay (default 150ms, max 30000ms):
 earplugger.exe install --delay-ms 250
 
+# Configure multi-cycle restart pulses for slow-enumerating USB DACs (default 3 pulses, 1000ms interval):
+earplugger.exe install --cycles 3 --cycle-delay-ms 1000
+
 # Bind the task to a specific user account:
 earplugger.exe install --user "DOMAIN\User"
 
@@ -122,18 +125,22 @@ Commands:
   help                 Print this message
 
 Options for 'restart':
-  --delay-ms <MS>      Settling delay in milliseconds before restart (default: 150, max: 30000)
-  --silent             Suppress interactive output (used by Task Scheduler)
+  --delay-ms <MS>          Settling delay in milliseconds before restart (default: 150, max: 30000)
+  --cycles <COUNT>         Number of restart pulses to issue (default: 3, max: 10, alias: --retries)
+  --cycle-delay-ms <MS>    Millisecond delay between restart cycles (default: 1000, max: 10000)
+  --silent                 Suppress interactive output (used by Task Scheduler)
 
 Options for 'install':
-  --device <NAME>      Audio device name filter. If omitted, auto-detects A1 from Voicemeeter.
-  --delay-ms <MS>      Settling delay in milliseconds to configure in the trigger (default: 150, max: 30000)
-  --user <USERNAME>    Target user for scheduled task (e.g. DOMAIN\User)
-  --no-wake            Disable triggers on system wake/resume from sleep (enabled by default)
-  --wake               Enable triggers on system wake/resume from sleep
+  --device <NAME>          Audio device name filter. If omitted, auto-detects A1 from Voicemeeter.
+  --delay-ms <MS>          Settling delay in milliseconds to configure in the trigger (default: 150, max: 30000)
+  --cycles <COUNT>         Number of restart pulses to configure (default: 3, max: 10, alias: --retries)
+  --cycle-delay-ms <MS>    Millisecond delay between cycles to configure (default: 1000, max: 10000)
+  --user <USERNAME>        Target user for scheduled task (e.g. DOMAIN\User)
+  --no-wake                Disable triggers on system wake/resume from sleep (enabled by default)
+  --wake                   Enable triggers on system wake/resume from sleep
 
 Options for 'uninstall':
-  --disable-channel    Also disable the Microsoft-Windows-Audio/Operational event channel
+  --disable-channel        Also disable the Microsoft-Windows-Audio/Operational event channel
 ```
 
 ---

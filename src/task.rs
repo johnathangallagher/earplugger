@@ -6,6 +6,8 @@ use std::process::Command;
 
 pub const TASK_NAME: &str = "Earplugger_AutoRestart";
 pub const DEFAULT_DELAY_MS: u64 = 150;
+pub const DEFAULT_CYCLES: u32 = 3;
+pub const DEFAULT_CYCLE_DELAY_MS: u64 = 1000;
 
 pub fn get_exe_path() -> Result<PathBuf, String> {
     env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {}", e))
@@ -386,6 +388,8 @@ pub fn generate_task_xml(
     exe_path: &str,
     device_filter: Option<&str>,
     delay_ms: u64,
+    cycles: u32,
+    cycle_delay_ms: u64,
     user: Option<&str>,
     include_wake_triggers: bool,
 ) -> Result<String, String> {
@@ -393,11 +397,11 @@ pub fn generate_task_xml(
         Some(dev) => {
             let variants = extract_device_variants(dev);
             if variants.is_empty() {
-                " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
+                " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1')]]".to_string()
             } else if variants.len() == 1 {
                 let formatted = format_xpath_string_literal(&variants[0])?;
                 format!(
-                    " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    " and *[EventData[Data[@Name='DeviceName']={} and (Data[@Name='flow']='0' or Data[@Name='flow']='1')]]",
                     formatted
                 )
             } else {
@@ -407,14 +411,12 @@ pub fn generate_task_xml(
                     terms.push(format!("Data[@Name='DeviceName']={}", formatted));
                 }
                 format!(
-                    " and *[EventData[({}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]",
+                    " and *[EventData[({}) and (Data[@Name='flow']='0' or Data[@Name='flow']='1')]]",
                     terms.join(" or ")
                 )
             }
         }
-        None => {
-            " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1') and Data[@Name='NewState']='1']]".to_string()
-        }
+        None => " and *[EventData[(Data[@Name='flow']='0' or Data[@Name='flow']='1')]]".to_string(),
     };
 
     let subscription = format!(
@@ -426,21 +428,28 @@ pub fn generate_task_xml(
     let escaped_exe = xml_escape(exe_path);
 
     let wake_trigger_block = if include_wake_triggers {
-        let wake_query = "<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]</Select></Query></QueryList>";
+        let wake_query = "<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]</Select><Select Path=\"System\">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507 or EventID=566)]]</Select></Query></QueryList>";
         let escaped_wake = xml_escape(wake_query);
         format!(
-            "\n    <EventTrigger>\n      <Enabled>true</Enabled>\n      <Subscription>{}</Subscription>\n    </EventTrigger>",
+            "\n    <EventTrigger>\n      <Enabled>true</Enabled>\n      <Subscription>{}</Subscription>\n    </EventTrigger>\n    <SessionStateChangeTrigger>\n      <Enabled>true</Enabled>\n      <StateChange>SessionUnlock</StateChange>\n    </SessionStateChangeTrigger>\n    <SessionStateChangeTrigger>\n      <Enabled>true</Enabled>\n      <StateChange>ConsoleConnect</StateChange>\n    </SessionStateChangeTrigger>",
             escaped_wake
         )
     } else {
         String::new()
     };
 
-    let args_val = if delay_ms != DEFAULT_DELAY_MS {
-        format!("restart --delay-ms {} --silent", delay_ms)
-    } else {
-        "restart --silent".to_string()
-    };
+    let mut args_parts = vec!["restart".to_string()];
+    if delay_ms != DEFAULT_DELAY_MS {
+        args_parts.push(format!("--delay-ms {}", delay_ms));
+    }
+    if cycles != DEFAULT_CYCLES {
+        args_parts.push(format!("--cycles {}", cycles));
+    }
+    if cycle_delay_ms != DEFAULT_CYCLE_DELAY_MS {
+        args_parts.push(format!("--cycle-delay-ms {}", cycle_delay_ms));
+    }
+    args_parts.push("--silent".to_string());
+    let args_val = args_parts.join(" ");
     let args_elem = format!("<Arguments>{}</Arguments>", xml_escape(&args_val));
 
     let user_elem = match user {
@@ -456,11 +465,14 @@ pub fn generate_task_xml(
         None => String::new(),
     };
 
-    // Scale ExecutionTimeLimit to accommodate the configured delay plus a 30-second buffer.
-    // For default 150ms delay, this yields PT30S. For maximum 30,000ms delay, this yields PT60S,
-    // preventing Task Scheduler from forcefully terminating the process before Voicemeeter
-    // finishes restarting and drops FFI resources cleanly.
-    let time_limit_secs = ((delay_ms / 1000) + 30).max(30);
+    // Scale ExecutionTimeLimit to accommodate the configured delay, retry cycles, plus a 30-second buffer.
+    // For default 150ms delay with 3 cycles @ 1000ms, this yields PT32S.
+    let retry_time_secs = if cycles > 1 {
+        ((cycles as u64 - 1) * cycle_delay_ms).div_ceil(1000)
+    } else {
+        0
+    };
+    let time_limit_secs = ((delay_ms / 1000) + retry_time_secs + 30).max(30);
     let time_limit_iso = format!("PT{}S", time_limit_secs);
 
     Ok(format!(
@@ -483,7 +495,7 @@ pub fn generate_task_xml(
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -563,6 +575,8 @@ impl Drop for TempFileGuard {
 pub fn install_task(
     device_filter: Option<&str>,
     delay_ms: u64,
+    cycles: u32,
+    cycle_delay_ms: u64,
     user: Option<&str>,
     include_wake_triggers: bool,
 ) -> Result<(), String> {
@@ -578,6 +592,8 @@ pub fn install_task(
         exe_str,
         device_filter,
         delay_ms,
+        cycles,
+        cycle_delay_ms,
         user,
         include_wake_triggers,
     )?;
@@ -691,6 +707,8 @@ pub struct TaskStatusDetails {
     pub has_engine_crash_trigger: bool,
     pub has_wake_trigger: bool,
     pub wake_trigger_enabled: bool,
+    pub has_session_trigger: bool,
+    pub session_trigger_enabled: bool,
     pub xml_raw: String,
 }
 
@@ -842,6 +860,61 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         }
     }
 
+    let mut has_session_trigger = false;
+    let mut session_trigger_enabled = false;
+
+    cursor = 0;
+    while let Some(rel_start) = find_tag_open(&lower_xml[cursor..], "<sessionstatechangetrigger") {
+        let t_start = cursor + rel_start;
+        let (trigger_block, t_end) = if let Some(tag_close) = lower_xml[t_start..].find('>') {
+            let tag_header = &lower_xml[t_start..t_start + tag_close];
+            if tag_header.trim_end().ends_with('/') {
+                ("", t_start + tag_close + 1)
+            } else if let Some(end) =
+                lower_xml[t_start + tag_close + 1..].find("</sessionstatechangetrigger>")
+            {
+                let content_end = t_start + tag_close + 1 + end;
+                (
+                    &lower_xml[t_start..content_end + "</sessionstatechangetrigger>".len()],
+                    content_end + "</sessionstatechangetrigger>".len(),
+                )
+            } else {
+                (&lower_xml[t_start..], lower_xml.len())
+            }
+        } else {
+            (&lower_xml[t_start..], lower_xml.len())
+        };
+
+        has_any_trigger = true;
+        has_session_trigger = true;
+
+        let trig_enabled = if let Some(e_start) = find_tag_open(trigger_block, "<enabled") {
+            if let Some(tag_close) = trigger_block[e_start..].find('>') {
+                let content_start = e_start + tag_close + 1;
+                if let Some(e_end) = trigger_block[content_start..].find("</enabled>") {
+                    let val = trigger_block[content_start..content_start + e_end].trim();
+                    val != "false" && val != "0"
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if trig_enabled {
+            session_trigger_enabled = true;
+            any_trigger_enabled = true;
+        }
+
+        cursor = t_end;
+        if cursor >= lower_xml.len() {
+            break;
+        }
+    }
+
     let is_enabled = settings_enabled && (!has_any_trigger || any_trigger_enabled);
 
     TaskStatusDetails {
@@ -851,6 +924,8 @@ pub fn parse_task_xml_status(raw: &[u8]) -> TaskStatusDetails {
         has_engine_crash_trigger,
         has_wake_trigger,
         wake_trigger_enabled,
+        has_session_trigger,
+        session_trigger_enabled,
         xml_raw: xml,
     }
 }
@@ -938,6 +1013,8 @@ mod tests {
             r"C:\Audio & Tools\earplugger.exe",
             Some("RODE NT-USB"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -946,24 +1023,36 @@ mod tests {
         assert!(xml.contains("<Command>C:\\Audio &amp; Tools\\earplugger.exe</Command>"));
         assert!(xml.contains("Data[@Name=&apos;DeviceName&apos;]=&apos;RODE NT-USB&apos;"));
         assert!(xml.contains("<Arguments>restart --silent</Arguments>"));
-        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>"));
         assert!(xml.contains(
             "(Data[@Name=&apos;flow&apos;]=&apos;0&apos; or Data[@Name=&apos;flow&apos;]=&apos;1&apos;)"
         ));
-        assert!(xml.contains("<ExecutionTimeLimit>PT30S</ExecutionTimeLimit>"));
-        // Wake trigger must be present when include_wake_triggers is true
+        assert!(xml.contains("<ExecutionTimeLimit>PT32S</ExecutionTimeLimit>"));
+        // Wake and session triggers must be present when include_wake_triggers is true
         assert!(xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(xml.contains("Microsoft-Windows-Kernel-Power"));
+        assert!(xml.contains("EventID=566"));
+        assert!(xml.contains("<StateChange>SessionUnlock</StateChange>"));
+        assert!(xml.contains("<StateChange>ConsoleConnect</StateChange>"));
         // When user is None, UserId must NOT be emitted
         assert!(!xml.contains("<UserId>"));
     }
 
     #[test]
     fn test_generate_task_xml_no_wake() {
-        let xml =
-            generate_task_xml(r"C:\earplugger.exe", Some("RODE NT-USB"), 150, None, false).unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("RODE NT-USB"),
+            150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            false,
+        )
+        .unwrap();
         assert!(!xml.contains("Microsoft-Windows-Power-Troubleshooter"));
         assert!(!xml.contains("Microsoft-Windows-Kernel-Power"));
+        assert!(!xml.contains("<SessionStateChangeTrigger>"));
         assert!(xml.contains("Microsoft-Windows-Audio/Operational"));
     }
 
@@ -973,6 +1062,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Speakers (RODE NT-USB)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -989,6 +1080,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Speakers (RODE NT-USB) (1)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -1002,6 +1095,8 @@ mod tests {
             r"C:\earplugger.exe",
             Some("Kopfhörer (Dynamisch) (RODE NT-USB)"),
             150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
             None,
             true,
         )
@@ -1026,7 +1121,16 @@ mod tests {
         );
         assert_eq!(clean_device_name(input), "RODE NT-USB");
 
-        let xml = generate_task_xml(r"C:\earplugger.exe", Some(input), 150, None, true).unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some(input),
+            150,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            true,
+        )
+        .unwrap();
         assert!(xml.contains(
             "Data[@Name=&apos;DeviceName&apos;]=&apos;Sennheiser 560S (2- RODE NT-USB)&apos;"
         ));
@@ -1077,8 +1181,16 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_custom_delay_and_user() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 200, Some("DOMAIN\\Alice"), true)
-            .unwrap();
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            None,
+            200,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            Some("DOMAIN\\Alice"),
+            true,
+        )
+        .unwrap();
         assert!(xml.contains("<Arguments>restart --delay-ms 200 --silent</Arguments>"));
         assert!(xml.contains("<UserId>DOMAIN\\Alice</UserId>"));
     }
@@ -1131,8 +1243,32 @@ mod tests {
 
     #[test]
     fn test_generate_task_xml_scaled_execution_time_limit() {
-        let xml = generate_task_xml(r"C:\earplugger.exe", None, 30_000, None, true).unwrap();
-        assert!(xml.contains("<ExecutionTimeLimit>PT60S</ExecutionTimeLimit>"));
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            None,
+            30_000,
+            DEFAULT_CYCLES,
+            DEFAULT_CYCLE_DELAY_MS,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(xml.contains("<ExecutionTimeLimit>PT62S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn test_generate_task_xml_custom_cycles_and_delay() {
+        let xml = generate_task_xml(
+            r"C:\earplugger.exe",
+            Some("RODE NT-USB"),
+            1000,
+            5,
+            1500,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(xml.contains("<Arguments>restart --delay-ms 1000 --cycles 5 --cycle-delay-ms 1500 --silent</Arguments>"));
     }
 
     #[test]
@@ -1256,5 +1392,26 @@ mod tests {
             "Focusrite: Line In"
         );
         assert_eq!(strip_driver_prefix("RODE NT-USB"), "RODE NT-USB");
+    }
+
+    #[test]
+    fn test_parse_task_xml_status_session_trigger() {
+        let session_xml = r#"<Task version="1.4">
+  <Triggers>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>SessionUnlock</StateChange>
+    </SessionStateChangeTrigger>
+    <SessionStateChangeTrigger>
+      <Enabled>false</Enabled>
+      <StateChange>ConsoleConnect</StateChange>
+    </SessionStateChangeTrigger>
+  </Triggers>
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"#;
+        let status = parse_task_xml_status(session_xml.as_bytes());
+        assert!(status.is_enabled);
+        assert!(status.has_session_trigger);
+        assert!(status.session_trigger_enabled);
     }
 }

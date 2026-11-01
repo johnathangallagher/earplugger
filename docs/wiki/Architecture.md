@@ -9,7 +9,7 @@ VB-Audio Voicemeeter ties its internal processing bus and mixing loop directly t
 ## Execution Flow
 
 1. **System & Audio Subsystem State Transitions:**
-   - **Audio Reconnect**: Windows MMDevAPI records Event ID 65 under `Microsoft-Windows-Audio/Operational` (`flow`: `0` for Render, `1` for Capture; `NewState`: `1` for `DEVICE_STATE_ACTIVE`).
+   - **Audio Reconnect**: Windows MMDevAPI records Event ID 65 under `Microsoft-Windows-Audio/Operational` (`flow`: `0` for Render, `1` for Capture across any state transition including active, unplugged, disabled, or not-present).
    - **Driver / Engine Crash**: Windows records Event ID 4 under `Microsoft-Windows-Audio/Operational` when `audiodg.exe` or an audio driver encounters an error condition.
    - **Sleep / Resume**: Windows records Event ID 1 under `System` (`Microsoft-Windows-Power-Troubleshooter`) or Event IDs 107/507 (`Microsoft-Windows-Kernel-Power`).
 
@@ -24,4 +24,4 @@ VB-Audio Voicemeeter ties its internal processing bus and mixing loop directly t
 
 5. **Voicemeeter Remote C API Dynamic Invocation:**
    `earplugger` dynamically resolves the bitness-matched DLL (`VoicemeeterRemote64.dll` on 64-bit architectures, `VoicemeeterRemote.dll` on 32-bit) using `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH`.
-   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, `VBVMR_GetParameterStringW`, `VBVMR_IsParametersDirty`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory, polls for parameter consumption, and unloads the library cleanly via RAII Drop handlers.
+   It binds `VBVMR_Login`, `VBVMR_SetParameterFloat`, `VBVMR_GetParameterStringW`, `VBVMR_IsParametersDirty`, and `VBVMR_Logout`. It writes `Command.Restart = 1.0f` to shared memory across a sequence of pulses (default: 3 cycles with 1000ms interval) while maintaining the login session and polling for parameter consumption across each cycle to guarantee slow-enumerating USB DACs acquire clean clock sync, and unloads the library cleanly via RAII Drop handlers.

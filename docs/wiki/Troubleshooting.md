@@ -46,10 +46,14 @@ If your device has complex, driver-aliased, or user-customized friendly names (e
      earplugger install --device "*"
      ```
 
-### 3. Insufficient Settling Time
-Some USB audio interfaces (such as certain multi-channel interfaces or Bluetooth dongles) require longer handshake times to negotiate master sample rates. Increase the settling delay:
+### 3. Insufficient Settling Time or Slow USB Enumeration
+Some USB audio interfaces and DACs (such as RODE NT-USB or Sennheiser 560S) require longer handshake times or multiple initialization pulses to negotiate master sample rates and stabilize clock PLLs after sleep or KVM reconnect:
 ```powershell
-earplugger install --delay-ms 300
+# Increase initial settle delay:
+earplugger install --delay-ms 1000
+
+# Increase number of restart pulses and interval between pulses:
+earplugger install --delay-ms 1000 --cycles 5 --cycle-delay-ms 1500
 ```
 
 ### 4. Audio Driver / audiodg.exe Crash Recovery
@@ -57,11 +61,12 @@ earplugger install --delay-ms 300
 - If audio becomes distorted without a physical reconnect, inspect Event Viewer under `Microsoft-Windows-Audio/Operational` for Event ID 4 (`Windows Audio Device Graph Isolation` error).
 - Ensure `earplugger status` reports `Audio reconnect : Events 65, 4 (Active)`.
 
-### 5. Sleep & Modern Standby Wake Triggers
-By default, `earplugger` registers wake triggers on `System` channel events:
-- `Microsoft-Windows-Power-Troubleshooter` (Event ID 1)
-- `Microsoft-Windows-Kernel-Power` (Event IDs 107 and 507)
-- If your system uses Modern Standby (S0 Low Power Idle) and audio does not restart on wake, ensure `earplugger status` reports `Sleep/resume : Events 1, 107, 507 (Active)`. If previously installed with `--no-wake`, re-enable with:
+### 5. Sleep, Standby, & Workstation Unlock Triggers
+By default, `earplugger` registers wake and session transition triggers:
+- `Microsoft-Windows-Power-Troubleshooter` (Event ID 1 — system wake)
+- `Microsoft-Windows-Kernel-Power` (Event IDs 107, 507, and 566 — wake, modern standby, display signal resume)
+- Session state change triggers (`SessionUnlock` upon unlocking desktop, `ConsoleConnect` upon KVM switch toggle)
+- Ensure `earplugger status` reports both `Sleep/resume : Events 1, 107, 507, 566 (Active)` and `Session / KVM : SessionUnlock, ConsoleConnect (Active)`. If previously installed with `--no-wake`, re-enable with:
   ```powershell
   earplugger install --wake
   ```

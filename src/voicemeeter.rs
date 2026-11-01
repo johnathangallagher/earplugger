@@ -569,22 +569,43 @@ impl Drop for VoicemeeterClient {
     }
 }
 
-pub fn restart_audio_engine(delay_ms: u64) -> Result<(), String> {
+pub fn restart_audio_engine(
+    delay_ms: u64,
+    cycles: u32,
+    cycle_delay_ms: u64,
+    silent: bool,
+) -> Result<(), String> {
     if delay_ms > 0 {
         sleep(Duration::from_millis(delay_ms));
     }
 
     let client = VoicemeeterClient::connect()?;
-    client.set_parameter_float(c"Command.Restart", 1.0)?;
+    let total_cycles = cycles.max(1);
 
-    // Hold client connection for 150ms while polling dirty status so Voicemeeter's
-    // message loop consumes Command.Restart before shared memory is unmapped during logout.
-    // Note: Command.Restart is a write-only trigger parameter that does not clear or set
-    // is_parameters_dirty(); the full 150ms hold is required by VB-Audio SDK shared memory specs.
-    for _ in 0..10 {
-        sleep(Duration::from_millis(15));
-        let _ = client.is_parameters_dirty();
+    for cycle in 1..=total_cycles {
+        if !silent && total_cycles > 1 {
+            println!(
+                "[earplugger] Triggering Voicemeeter audio engine restart ({}/{})...",
+                cycle, total_cycles
+            );
+        }
+
+        client.set_parameter_float(c"Command.Restart", 1.0)?;
+
+        // Hold client connection for 150ms while polling dirty status so Voicemeeter's
+        // message loop consumes Command.Restart before shared memory is unmapped during logout.
+        // Note: Command.Restart is a write-only trigger parameter that does not clear or set
+        // is_parameters_dirty(); the full 150ms hold is required by VB-Audio SDK shared memory specs.
+        for _ in 0..10 {
+            sleep(Duration::from_millis(15));
+            let _ = client.is_parameters_dirty();
+        }
+
+        if cycle < total_cycles && cycle_delay_ms > 0 {
+            sleep(Duration::from_millis(cycle_delay_ms));
+        }
     }
+
     Ok(())
 }
 
